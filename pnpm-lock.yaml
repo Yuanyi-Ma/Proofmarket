@@ -79,6 +79,9 @@ importers:
       '@proofmarket/agents':
         specifier: workspace:*
         version: link:../agents
+      '@proofmarket/chain':
+        specifier: workspace:*
+        version: link:../chain
       '@proofmarket/cobo':
         specifier: workspace:*
         version: link:../cobo

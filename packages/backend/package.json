@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@proofmarket/agents": "workspace:*",
+    "@proofmarket/chain": "workspace:*",
     "@proofmarket/cobo": "workspace:*",
     "@proofmarket/shared": "workspace:*"
   },

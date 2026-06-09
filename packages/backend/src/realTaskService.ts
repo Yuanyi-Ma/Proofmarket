@@ -129,6 +129,8 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
   let auditCounter = 0;
   // Judge verdict hashes live only between verify() and settle() in one process.
   const verdicts = new Map<string, string>();
+  // Re-entry guard: task ids with a money-moving operation currently in flight.
+  const inFlight = new Set<string>();
 
   const escrowAddress = deps.deployment.contracts.ProofMarketEscrow as `0x${string}`;
   const tokenAddress = deps.deployment.contracts.MockUSDC as `0x${string}`;
@@ -175,6 +177,13 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
     return store.saveTask(task);
   }
 
+  /** Status gate: every method calls this FIRST, before any external side effect. */
+  function assertStatus(task: Task, expected: TaskStatus[], action: string): void {
+    if (!expected.includes(task.status)) {
+      throw new Error(`cannot ${action} from status ${task.status}`);
+    }
+  }
+
   function transition(task: Task, status: TaskStatus): Task {
     assertTransition(task.status, status);
     return {
@@ -215,6 +224,9 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
       throw new Error("Cannot execute a Cobo call without a pact");
     }
 
+    // Attempt-unique idempotency suffix: a retried label gets a new index
+    // because the failed record from the previous attempt stays in txRecords.
+    const attemptIndex = taskRef.task.txRecords.length;
     const pending: TxRecord = { label, coboTxId: null, txHash: "", status: "pending" };
     taskRef.task = save({
       ...taskRef.task,
@@ -230,37 +242,78 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
       taskRef.task = save({ ...taskRef.task, txRecords, updatedAt: deps.now() });
     }
 
-    const call = await deps.cobo.callContract({
-      pactId,
-      contract,
-      calldata,
-      requestId: `${taskRef.task.id}-${label}`,
-      description: label
-    });
+    function auditFailure(error: unknown): void {
+      taskRef.task = save(
+        withAudit(
+          taskRef.task,
+          audit({
+            taskId: taskRef.task.id,
+            source: "chain",
+            type: "chain_tx_failed",
+            result: "failed",
+            message: `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+            pactId,
+            jobId: taskRef.task.jobId
+          })
+        )
+      );
+    }
+
+    let call: { coboTxId: string; status: string; raw: string };
+    try {
+      call = await deps.cobo.callContract({
+        pactId,
+        contract,
+        calldata,
+        requestId: `${taskRef.task.id}-${label}-${attemptIndex}`,
+        description: label
+      });
+    } catch (error) {
+      patchRecord({ status: "failed" });
+      auditFailure(error);
+      throw error;
+    }
+    // Persist the Cobo identifier immediately so a crash mid-poll is traceable.
+    patchRecord({ coboTxId: call.coboTxId });
 
     let txHash: string | null = null;
     for (let attempt = 0; attempt < MAX_TX_POLLS; attempt += 1) {
       const { parsed } = await deps.cobo.getTx(call.coboTxId);
       if (isFailedTxStatus(parsed)) {
-        patchRecord({ coboTxId: call.coboTxId, status: "failed" });
-        throw new Error(
+        patchRecord({ status: "failed" });
+        const error = new Error(
           `Cobo transaction ${call.coboTxId} (${label}) failed with status ${String(parsed.status)}`
         );
+        auditFailure(error);
+        throw error;
       }
       txHash = extractTxHash(parsed);
       if (txHash) break;
       await delay(pollDelayMs);
     }
     if (!txHash) {
-      patchRecord({ coboTxId: call.coboTxId, status: "failed" });
-      throw new Error(
+      patchRecord({ status: "failed" });
+      const error = new Error(
         `Cobo transaction ${call.coboTxId} (${label}) produced no tx hash after ${MAX_TX_POLLS} polls`
       );
+      auditFailure(error);
+      throw error;
     }
 
-    const receipt = await deps.chain.waitForReceipt(txHash as `0x${string}`);
+    // Persist the tx hash before waiting for the receipt: if waitForReceipt
+    // throws, the record keeps both identifiers (still pending — the tx may
+    // have landed on chain).
+    patchRecord({ txHash });
 
-    patchRecord({ coboTxId: call.coboTxId, txHash, status: "confirmed" });
+    let receipt: { logs: unknown[]; transactionHash: string };
+    try {
+      receipt = await deps.chain.waitForReceipt(txHash as `0x${string}`);
+    } catch (error) {
+      auditFailure(error);
+      throw error;
+    }
+
+    patchRecord({ status: "confirmed" });
     taskRef.task = save(
       withAudit(
         taskRef.task,
@@ -327,6 +380,7 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async plan(id: string): Promise<Task> {
       const task = store.getTask(id);
+      assertStatus(task, ["Created"], "plan");
       const budgetAmount = leadingDecimal(task.budgetLimit);
       const providerCatalog = providerProfiles.map((profile) => ({
         providerId: profile.id,
@@ -391,6 +445,7 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async submitPact(id: string): Promise<Task> {
       const task = store.getTask(id);
+      assertStatus(task, ["Planned"], "submit pact");
       const budgetAmount = leadingDecimal(task.budgetLimit);
       const submission = buildRealPactSubmission({
         escrowAddress,
@@ -414,8 +469,9 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         expiresInMinutes: 90,
         pactId: result.pactId,
         // Even if Cobo auto-approves immediately, stay in PactSubmitted here;
-        // activatePact is the explicit activation gate.
-        status: result.status.includes("active") ? "active" : "submitted"
+        // activatePact is the explicit activation gate. Strict equality so
+        // "inactive"/"deactivated" never read as active.
+        status: result.status.trim().toLowerCase() === "active" ? "active" : "submitted"
       };
 
       const submitted = transition(
@@ -448,7 +504,9 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
       }
 
       const status = await deps.cobo.getPactStatus(task.pact.pactId);
-      if (!status.status.includes("active")) {
+      // Strict equality: "inactive"/"deactivated" must NOT count as active.
+      const isActive = status.status.trim().toLowerCase() === "active";
+      if (!isActive) {
         return save(
           withAudit(
             task,
@@ -491,70 +549,80 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async executeEscrow(id: string): Promise<Task> {
       const task = store.getTask(id);
-      if (task.pact?.status !== "active") {
-        throw new Error("pact not active — approve it first");
+      // Both pre-states are legal per the state machine (DeniedByCobo -> JobFunded).
+      assertStatus(task, ["PactActive", "DeniedByCobo"], "execute escrow");
+      if (inFlight.has(id)) {
+        throw new Error("operation already in progress for this task");
       }
-      if (!task.plan) {
-        throw new Error("Cannot execute escrow without a procurement plan");
-      }
+      inFlight.add(id);
+      try {
+        if (task.pact?.status !== "active") {
+          throw new Error("pact not active — approve it first");
+        }
+        if (!task.plan) {
+          throw new Error("Cannot execute escrow without a procurement plan");
+        }
 
-      const budgetAmount = leadingDecimal(task.budgetLimit);
-      const budgetRaw = BigInt(Math.round(Number(budgetAmount) * 1e6));
-      const taskRef = { task };
+        const budgetAmount = leadingDecimal(task.budgetLimit);
+        const budgetRaw = BigInt(Math.round(Number(budgetAmount) * 1e6));
+        const taskRef = { task };
 
-      await coboCall(
-        taskRef,
-        "approve",
-        tokenAddress,
-        encodeApprove(escrowAddress, budgetRaw)
-      );
+        await coboCall(
+          taskRef,
+          "approve",
+          tokenAddress,
+          encodeApprove(escrowAddress, budgetRaw)
+        );
 
-      const unixNow = Math.floor(Date.parse(deps.now()) / 1000);
-      const createJobReceipt = await coboCall(
-        taskRef,
-        "createJob",
-        escrowAddress,
-        encodeCreateJob({
-          providerAgentId: 1n,
-          provider: deps.providerAddress as `0x${string}`,
-          verifierAgentId: 3n,
-          evaluator: deps.deployment.coboWallet as `0x${string}`,
-          token: tokenAddress,
-          expiredAt: BigInt(unixNow + 7200),
-          descriptionHash: stableHash({
-            taskId: task.id,
-            question: task.userQuestion
-          }) as `0x${string}`,
-          coverageHash: stableHash({ coverage: task.plan.coverage }) as `0x${string}`
-        })
-      );
-
-      const jobId = deps.chain.extractJobId(createJobReceipt, escrowAddress);
-      taskRef.task = save({
-        ...taskRef.task,
-        jobId: Number(jobId),
-        updatedAt: deps.now()
-      });
-
-      await coboCall(taskRef, "setBudget", escrowAddress, encodeSetBudget(jobId, budgetRaw));
-      await coboCall(taskRef, "fund", escrowAddress, encodeFund(jobId, budgetRaw));
-
-      const funded = transition(taskRef.task, "JobFunded");
-
-      return save(
-        withAudit(
-          funded,
-          audit({
-            taskId: id,
-            source: "cobo",
-            type: "escrow_executed",
-            result: "success",
-            message: `Escrow job ${jobId} funded with ${budgetAmount} mUSDC on Sepolia.`,
-            pactId: task.pact.pactId,
-            jobId: Number(jobId)
+        const unixNow = Math.floor(Date.parse(deps.now()) / 1000);
+        const createJobReceipt = await coboCall(
+          taskRef,
+          "createJob",
+          escrowAddress,
+          encodeCreateJob({
+            providerAgentId: 1n,
+            provider: deps.providerAddress as `0x${string}`,
+            verifierAgentId: 3n,
+            evaluator: deps.deployment.coboWallet as `0x${string}`,
+            token: tokenAddress,
+            expiredAt: BigInt(unixNow + 7200),
+            descriptionHash: stableHash({
+              taskId: task.id,
+              question: task.userQuestion
+            }) as `0x${string}`,
+            coverageHash: stableHash({ coverage: task.plan.coverage }) as `0x${string}`
           })
-        )
-      );
+        );
+
+        const jobId = deps.chain.extractJobId(createJobReceipt, escrowAddress);
+        taskRef.task = save({
+          ...taskRef.task,
+          jobId: Number(jobId),
+          updatedAt: deps.now()
+        });
+
+        await coboCall(taskRef, "setBudget", escrowAddress, encodeSetBudget(jobId, budgetRaw));
+        await coboCall(taskRef, "fund", escrowAddress, encodeFund(jobId, budgetRaw));
+
+        const funded = transition(taskRef.task, "JobFunded");
+
+        return save(
+          withAudit(
+            funded,
+            audit({
+              taskId: id,
+              source: "cobo",
+              type: "escrow_executed",
+              result: "success",
+              message: `Escrow job ${jobId} funded with ${budgetAmount} mUSDC on Sepolia.`,
+              pactId: task.pact.pactId,
+              jobId: Number(jobId)
+            })
+          )
+        );
+      } finally {
+        inFlight.delete(id);
+      }
     },
 
     async triggerDenial(id: string): Promise<Task> {
@@ -596,7 +664,8 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async runProvider(id: string, providerId: ProviderId): Promise<Task> {
       const task = store.getTask(id);
-      if (task.status !== "JobFunded" || task.jobId === null) {
+      assertStatus(task, ["JobFunded"], "run provider");
+      if (task.jobId === null) {
         throw new Error("Cannot run provider before the job is funded");
       }
       const jobId = String(task.jobId);
@@ -665,7 +734,8 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async verify(id: string): Promise<Task> {
       const task = store.getTask(id);
-      if (task.status !== "Delivered" || !task.providerPackage) {
+      assertStatus(task, ["Delivered"], "verify");
+      if (!task.providerPackage) {
         throw new Error("Cannot verify before provider delivery");
       }
 
@@ -704,37 +774,46 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
     async settle(id: string): Promise<Task> {
       const task = store.getTask(id);
-      if (task.status !== "Verified" || task.jobId === null) {
-        throw new Error("Cannot settle before verification");
+      assertStatus(task, ["Verified"], "settle");
+      if (inFlight.has(id)) {
+        throw new Error("operation already in progress for this task");
       }
-      const verdictHash = verdicts.get(task.id);
-      if (!verdictHash) {
-        throw new Error("No judge verdict hash recorded for this task");
+      inFlight.add(id);
+      try {
+        if (task.jobId === null) {
+          throw new Error("Cannot settle before verification");
+        }
+        const verdictHash = verdicts.get(task.id);
+        if (!verdictHash) {
+          throw new Error("No judge verdict hash recorded for this task");
+        }
+
+        const taskRef = { task };
+        await coboCall(
+          taskRef,
+          "complete",
+          escrowAddress,
+          encodeComplete(BigInt(task.jobId), verdictHash as `0x${string}`)
+        );
+
+        const settled = transition(taskRef.task, "Settled");
+
+        return save(
+          withAudit(
+            settled,
+            audit({
+              taskId: id,
+              source: "settlement",
+              type: "settled",
+              result: "success",
+              message: `Provider payment settled with verdict hash ${verdictHash}.`,
+              jobId: task.jobId
+            })
+          )
+        );
+      } finally {
+        inFlight.delete(id);
       }
-
-      const taskRef = { task };
-      await coboCall(
-        taskRef,
-        "complete",
-        escrowAddress,
-        encodeComplete(BigInt(task.jobId), verdictHash as `0x${string}`)
-      );
-
-      const settled = transition(taskRef.task, "Settled");
-
-      return save(
-        withAudit(
-          settled,
-          audit({
-            taskId: id,
-            source: "settlement",
-            type: "settled",
-            result: "success",
-            message: `Provider payment settled with verdict hash ${verdictHash}.`,
-            jobId: task.jobId
-          })
-        )
-      );
     },
 
     async winChallenge(): Promise<Task> {

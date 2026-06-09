@@ -257,4 +257,100 @@ describe("real task service", () => {
     await expect(service.winChallenge(created.id)).rejects.toThrow(/fixture/i);
     await expect(service.refundOrSlash(created.id)).rejects.toThrow(/fixture/i);
   });
+
+  it("rejects a second executeEscrow after success without touching cobo again", async () => {
+    const deps = makeDeps();
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    const callsAfterFirst = [...deps.calls];
+    await expect(service.executeEscrow(active.id)).rejects.toThrow(/cannot execute escrow/);
+    expect(deps.calls).toEqual(callsAfterFirst);
+  });
+
+  it("allows only one of two concurrent executeEscrow calls to proceed", async () => {
+    const deps = makeDeps();
+    const originalCallContract = deps.cobo.callContract;
+    deps.cobo.callContract = async (input) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return originalCallContract(input);
+    };
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    const results = await Promise.allSettled([
+      service.executeEscrow(active.id),
+      service.executeEscrow(active.id)
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected"
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0].reason)).toMatch(/already in progress/);
+    expect(deps.calls).toEqual([
+      "cobo:approve",
+      "cobo:createJob",
+      "cobo:setBudget",
+      "cobo:fund"
+    ]);
+  });
+
+  it("uses attempt-unique request ids for cobo calls", async () => {
+    const deps = makeDeps();
+    const requestIds: string[] = [];
+    const originalCallContract = deps.cobo.callContract;
+    deps.cobo.callContract = async (input) => {
+      requestIds.push(input.requestId);
+      return originalCallContract(input);
+    };
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    expect(requestIds).toEqual([
+      `${active.id}-approve-0`,
+      `${active.id}-createJob-1`,
+      `${active.id}-setBudget-2`,
+      `${active.id}-fund-3`
+    ]);
+    expect(new Set(requestIds).size).toBe(requestIds.length);
+  });
+
+  it("does not treat an inactive pact status as active", async () => {
+    const deps = makeDeps();
+    deps.cobo.getPactStatus = async () => ({ pactId: "p-1", status: "inactive", raw: "{}" });
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const created = await service.createTask("q", "5 test USDC");
+    await service.plan(created.id);
+    await service.submitPact(created.id);
+    const result = await service.activatePact(created.id);
+    expect(result.status).toBe("PactSubmitted");
+  });
+
+  it("records a chain_tx_failed audit event and failed record when the tx fails", async () => {
+    const store = createInMemoryStore();
+    const deps = makeDeps();
+    deps.cobo.getTx = async () => ({ raw: "{}", parsed: { status: "failed" } });
+    const service = createRealTaskService(store, deps);
+    const active = await driveToPactActive(service);
+    await expect(service.executeEscrow(active.id)).rejects.toThrow(/failed/);
+    const stored = store.getTask(active.id);
+    expect(stored.audit.some((event) => event.type === "chain_tx_failed")).toBe(true);
+    const approve = stored.txRecords.find((record) => record.label === "approve");
+    expect(approve?.status).toBe("failed");
+    expect(approve?.coboTxId).toBe("tx-approve");
+  });
+
+  it("fails the record and names the poll count when polls are exhausted", async () => {
+    const store = createInMemoryStore();
+    const deps = makeDeps();
+    deps.cobo.getTx = async () => ({ raw: "{}", parsed: {} });
+    const service = createRealTaskService(store, deps);
+    const active = await driveToPactActive(service);
+    await expect(service.executeEscrow(active.id)).rejects.toThrow(/60 polls/);
+    const stored = store.getTask(active.id);
+    const approve = stored.txRecords.find((record) => record.label === "approve");
+    expect(approve?.status).toBe("failed");
+    expect(stored.audit.some((event) => event.type === "chain_tx_failed")).toBe(true);
+  });
 });

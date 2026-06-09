@@ -11,7 +11,9 @@
 **Spec:** `../../../spec/proofmarket-demo/real-success-path-spec.md` (定稿 2026-06-10)
 
 **Key environment facts (verified 2026-06-10):**
-- `caw` v0.2.86 at `/Users/luke/.local/bin/caw`. `caw status` → `{"healthy":true,"wallet_paired":false,"wallet_status":"active"}`. **Pairing is a manual step only Luke can do — flag it before Task 7.**
+- `caw` v0.2.86 at `/Users/luke/.local/bin/caw`. `caw status` → `{"healthy":true,"wallet_paired":false,"wallet_status":"active"}`.
+- **Pact approval is fully automatic while unpaired** (probe verified: `caw pact submit` → `"Pact submitted and auto-approved for unpaired agent"`, status `active` immediately). The whole real path is therefore testable end-to-end with no human in the loop. Pairing is OPTIONAL and only changes Demo Day narrative (human-approval scene); if Luke pairs before the demo, re-run the full acceptance afterwards because approval becomes manual.
+- `caw` responses use an envelope: `{"message":"","result":{...},"success":true}` — e.g. `pact_id` lives at `result.pact_id`. All parsers must unwrap `result` when present.
 - Cobo Sepolia address: `0xe84772e20744cdc22318825e00cf5fdf6000cc24`, balance 0.01 SETH (needs faucet top-up).
 - Real CLI surface: `caw pact submit --intent --execution-plan --policies --completion-conditions`, `caw pact status --pact-id` (triggers lazy activation), `caw tx call --pact-id --contract --calldata --chain-id SETH [--request-id] [--value]`, `caw tx get --tx-id|--request-id`, `caw tx transfer --pact-id --token-id SETH --dst-address --amount`, `caw faucet deposit`. Exit code 5 = policy denied (this is the real denial signal).
 - `contract_call` policies support ONLY `chain_in` + `target_in` (contract addresses) + `deny_if.usage_limits.rolling_24h.tx_count_gt`. No per-function selectors, no parameter/amount matching in this CLI version. Budget exposure is bounded by: small MockUSDC mint, tx-count completion condition, pact expiry, and default-deny on everything else (transfers are denied because no transfer policy exists). State this honestly in UI/talk track.
@@ -666,6 +668,16 @@ describe("createCliCoboClient", () => {
     expect(result.raw).toContain("p-123");
   });
 
+  it("unwraps the real caw envelope {message, result, success}", async () => {
+    const dir = fakeCaw(
+      `echo '{"message":"","result":{"pact_id":"p-real","status":"active","message":"Pact submitted and auto-approved for unpaired agent."},"success":true}'`
+    );
+    const client = createCliCoboClient({ pathPrepend: dir });
+    const result = await client.submitPact(submission);
+    expect(result.pactId).toBe("p-real");
+    expect(result.status).toBe("active");
+  });
+
   it("passes required flags to pact submit", async () => {
     const dir = fakeCaw(`echo "$@" > "$0.args"; echo '{"pact_id":"p-1"}'`);
     const client = createCliCoboClient({ pathPrepend: dir });
@@ -792,19 +804,24 @@ function runCaw(args: string[], options: CoboClientOptions): Promise<RunResult> 
 }
 
 function parseLooseJson(raw: string): Record<string, unknown> {
+  let parsed: Record<string, unknown> = {};
   try {
-    return JSON.parse(raw) as Record<string, unknown>;
+    parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
       try {
-        return JSON.parse(match[0]) as Record<string, unknown>;
+        parsed = JSON.parse(match[0]) as Record<string, unknown>;
       } catch {
         /* fall through */
       }
     }
-    return {};
   }
+  // caw wraps payloads as {message, result: {...}, success} — unwrap when present
+  if (parsed.result && typeof parsed.result === "object" && !Array.isArray(parsed.result)) {
+    return { ...parsed, ...(parsed.result as Record<string, unknown>) };
+  }
+  return parsed;
 }
 
 function pickString(obj: Record<string, unknown>, keys: string[]): string {
@@ -2090,7 +2107,7 @@ Implementation requirements (each is asserted by a Step 4 test — keep them in 
 2. `plan` — build provider catalog from `providerProfiles` (id, name, coverage→specialties, price), call `deps.runResearchAgent`; on success store a `ProcurementPlan` derived from the validated output (`recommendedProviderId` cast to `ProviderId`, `evidenceNeed` = the plan's `reason` so the UI shows Claude's provider-selection rationale, `totalBudget` = `${maxPayment} mUSDC`, `verificationMethod` = "deterministic judge endpoint") plus `claudePlanRaw = rawStdout`; transition `Created → Planned`; audit `source: "research-agent"`. On failure: rethrow (route returns 500 with real message).
 3. `submitPact` — `buildRealPactSubmission` (import from `@proofmarket/cobo/src/pactPolicy`) with escrow/token addresses from `deps.deployment` and budget parsed from `task.budgetLimit` (leading decimal, e.g. `"5 test USDC"` → `"5"`); call `deps.cobo.submitPact`; store `PactSummary` with real `pactId` and `status: "submitted"`; transition to `PactSubmitted`; audit raw output.
 4. `activatePact` — poll once via `deps.cobo.getPactStatus`; if status string contains `"active"`, set pact status active and transition `PactSubmitted → PactActive`; otherwise return the task UNCHANGED (no transition, audit a `pending` event). Frontend calls this repeatedly as a "check approval" button.
-5. `executeEscrow` — guard: pact must exist and be `active`, else throw `"pact not active"`. Budget raw units: `BigInt(Math.round(Number(budgetAmount) * 1e6))`. Then four sequential Cobo calls, each via a private helper `coboCall(task, label, contract, calldata)` that (a) calls `deps.cobo.callContract` with `requestId = \`${task.id}-${label}\``, (b) polls `deps.cobo.getTx` until `parsed.tx_hash` (or `transaction_hash`) is a 66-char hex and status is terminal (max 60 polls, 5s apart in prod; the poll delay must be injectable/zero in tests), (c) `deps.chain.waitForReceipt`, (d) appends a `TxRecord` with status `confirmed` and an audit event carrying the REAL txHash. Order: `approve(escrow, budget)` on MockUSDC → `createJob(providerAgentId=1, provider=deps.providerAddress, verifierAgentId=3, evaluator=deployment.coboWallet, token=MockUSDC, expiredAt=now+2h, descriptionHash=stableHash({taskId,question}), coverageHash=stableHash({coverage: plan.coverage}))` on escrow → extract `jobId` from the createJob receipt → `setBudget(jobId, budget)` → `fund(jobId, budget)`. Transition `PactActive → JobFunded`, store `jobId` as number.
+5. `executeEscrow` — guard: pact must exist and be `active`, else throw `"pact not active"`. Budget raw units: `BigInt(Math.round(Number(budgetAmount) * 1e6))`. Then four sequential Cobo calls, each via a private helper `coboCall(task, label, contract, calldata)` that (a) appends a `TxRecord` with status `pending` and **immediately persists via `store.saveTask` so concurrent GETs see live progress**, (b) calls `deps.cobo.callContract` with `requestId = \`${task.id}-${label}\``, (c) polls `deps.cobo.getTx` until `parsed.tx_hash` (or `transaction_hash`) is a 66-char hex and status is terminal (max 60 polls, 5s apart in prod; the poll delay must be injectable/zero in tests), (d) `deps.chain.waitForReceipt`, (e) updates the same `TxRecord` to `confirmed` with the REAL txHash, persists again, and appends an audit event. Order: `approve(escrow, budget)` on MockUSDC → `createJob(providerAgentId=1, provider=deps.providerAddress, verifierAgentId=3, evaluator=deployment.coboWallet, token=MockUSDC, expiredAt=now+2h, descriptionHash=stableHash({taskId,question}), coverageHash=stableHash({coverage: plan.coverage}))` on escrow → extract `jobId` from the createJob receipt → `setBudget(jobId, budget)` → `fund(jobId, budget)`. Transition `PactActive → JobFunded`, store `jobId` as number. Add a test: a `store.getTask` snapshot taken between fake cobo calls (hook the fake `callContract` to capture it) shows the earlier records `confirmed` and the current one `pending`.
 6. `runProvider` — requires `JobFunded`; call `deps.services.runProvider`, store package; call `deps.services.submitDeliverable` with the package hash; record `submit` TxRecord (provider signer hash); transition to `Delivered`. After submit, `deps.chain.readJobState` must show `deliverableHash === packageHash` — if mismatch, throw (hash integrity check from spec §11.1).
 7. `verify` — requires `Delivered`; call `deps.services.judgeVerify` with the package + criteria; `valid → Verified` else `Challenged`; audit verdict hash + reason.
 8. `settle` — requires `Verified`; Cobo `complete(jobId, verdictHash)` via the same `coboCall` helper; transition to `Settled`; audit settlement tx hash.
@@ -2211,9 +2228,13 @@ export function getTaskService(): TaskService {
 
 Add `PROVIDER_SIGNER_ADDRESS=` to `.env.example` (address of the provider signer key; createJob's `provider` arg and Escrow's `submit` sender must match).
 
-- [ ] **Step 2: Add pact-status route**
+- [ ] **Step 2: Add pact-status route and a task GET route for live progress**
 
 `apps/web/app/api/tasks/[taskId]/pact-status/route.ts` — same pattern as the existing action routes, calls `service.activatePact(taskId)`.
+
+`apps/web/app/api/tasks/[taskId]/route.ts` — `GET` returning `service.getTask(taskId)` (read-only, no transition). The in-memory store is a process-wide singleton, so a GET issued while a long-running action POST is in flight returns the incrementally saved task with live `txRecords`.
+
+In `page.tsx`, while `busyAction` is one of `execute` / `provider` / `settle`, poll `GET /api/tasks/${task.id}` every 2 seconds with `setInterval` and `setTask` on each response; clear the interval when the action resolves (the POST response remains the authoritative final state). Result: during escrow execution the timeline shows `approve — confirmed`, `createJob — pending`, … updating live instead of a 1–3 minute opaque busy state. Add a test in `task-flow.test.tsx`: render with a mocked fetch where the GET returns a task containing one pending txRecord, advance fake timers, assert the pending row renders.
 
 - [ ] **Step 3: Frontend changes (test-first where the components are already covered)**
 
@@ -2270,13 +2291,16 @@ checks.push({
 });
 
 checks.push({
-  name: "caw wallet paired (required for pact approval)",
+  name: "caw wallet status",
   run: () => {
     const status = JSON.parse(execFileSync("caw", ["status"], { encoding: "utf8" }));
-    if (!status.wallet_paired) {
-      throw new Error("wallet_paired=false — run `caw onboard` pairing with the Cobo app first");
+    if (status.wallet_status !== "active" || !status.healthy) {
+      throw new Error(`wallet not ready: ${JSON.stringify(status)}`);
     }
-    return "paired";
+    // Pairing is informational, not a gate: unpaired agents auto-approve pacts (verified).
+    return status.wallet_paired
+      ? "active, paired (pact approval is MANUAL — approve in the Cobo app when prompted)"
+      : "active, unpaired (pacts auto-approve; fully automated run)";
   }
 });
 
@@ -2339,7 +2363,7 @@ Also check provider signer gas (same pattern as the cobo wallet check, `PROVIDER
 
 - [ ] **Step 2: Headless driver `scripts/run-real-success.ts`**
 
-Drives the Next API end-to-end (server must be running with `PROOFMARKET_MODE=real`). Sequence: POST `/api/tasks` → `/plan` → `/pact` → loop POST `/pact-status` every 10s printing "waiting for Cobo approval…" until status `PactActive` (this is where Luke approves in the Cobo app) → `/execute` → `/provider {providerId from plan}` → `/verify` → `/settle` → then POST `/denial-demo` on a SECOND fresh task driven to PactActive, to capture a real denial without consuming the success pact's tx budget. Print every tx hash and finish by printing the audit JSONL path. Straightforward fetch loop, ~120 lines, same `readTaskResponse` error pattern as `page.tsx`.
+Drives the Next API end-to-end (server must be running with `PROOFMARKET_MODE=real`). Sequence: POST `/api/tasks` → `/plan` → `/pact` → loop POST `/pact-status` every 10s until status `PactActive` (unpaired wallet: exits on the first iteration because pacts auto-approve; paired wallet: prints "waiting for Cobo approval — approve in the Cobo app" until approved) → `/execute` → `/provider {providerId from plan}` → `/verify` → `/settle` → then POST `/denial-demo` on a SECOND fresh task driven to PactActive, to capture a real denial without consuming the success pact's tx budget. Print every tx hash and finish by printing the audit JSONL path. Straightforward fetch loop, ~120 lines, same `readTaskResponse` error pattern as `page.tsx`.
 
 - [ ] **Step 3: Root scripts + README**
 
@@ -2354,18 +2378,18 @@ git commit -m "feat: real-env preflight and headless real success-path driver"
 
 ---
 
-### Task 10: Real-chain acceptance run (MANUAL GATES — needs Luke)
+### Task 10: Real-chain acceptance run (fully automatable while the wallet is unpaired)
 
-No new code. This is the spec §16 最小通过定义 checklist executed against Sepolia.
+No new code. This is the spec §16 最小通过定义 checklist executed against Sepolia. With the wallet unpaired, pacts auto-approve, so every step below can run without Luke.
 
-- [ ] **Step 1 (LUKE): pair the Cobo wallet** — `caw onboard` / Cobo app pairing until `caw status` shows `wallet_paired: true`.
-- [ ] **Step 2: top up gas** — `caw faucet deposit` for the Cobo wallet; fund deployer + provider signer keys from a public Sepolia faucet. `pnpm preflight` → all PASS.
-- [ ] **Step 3: start stack** — terminal A `pnpm dev:services`; terminal B `PROOFMARKET_MODE=real pnpm dev`.
-- [ ] **Step 4: run `pnpm demo:real`** — when it prints "waiting for Cobo approval", **Luke approves the Pact in the Cobo app**. Expect: real pactId, 5 confirmed Sepolia tx hashes (approve/createJob/setBudget/fund/complete), package hash readable back from chain state, judge verdict hash in the JobCompleted event tx, and a real denial record with exit code 5.
-- [ ] **Step 5: cross-check every hash** on sepolia.etherscan.io and in `data/demo-state/audit-task_*.jsonl`. Each item of spec §11.2 审计材料表 must have a concrete value. Record them in `docs/superpowers/plans/2026-06-10-acceptance-record.md`.
-- [ ] **Step 6: run the UI flow once by hand** (fresh task in the browser, same steps) to verify the demo-day driving surface, including the "Check Cobo approval" loop and the denial panel showing raw Cobo output.
-- [ ] **Step 7: fixture regression** — `PROOFMARKET_MODE=fixture pnpm test && pnpm demo:success && pnpm demo:challenge && pnpm demo:denial` all still green (challenge path must keep working; it remains the local mechanism demo).
-- [ ] **Step 8: final commit + tag**
+- [ ] **Step 1: top up gas** — `caw faucet deposit` for the Cobo wallet; fund deployer + provider signer keys (also via `caw faucet deposit` to those addresses). `pnpm preflight` → all PASS.
+- [ ] **Step 2: start stack** — terminal A `pnpm dev:services`; terminal B `PROOFMARKET_MODE=real pnpm dev`.
+- [ ] **Step 3: run `pnpm demo:real`** — pact auto-approves, no manual gate. Expect: real pactId, 5 confirmed Sepolia tx hashes (approve/createJob/setBudget/fund/complete), package hash readable back from chain state, judge verdict hash in the JobCompleted event tx, and a real denial record with exit code 5.
+- [ ] **Step 3b (OPTIONAL, Demo Day narrative decision — Luke):** if the human-approval scene is wanted, pair the Cobo app, then RE-RUN this whole acceptance: approval becomes manual and the rehearsal must cover it (spec §15).
+- [ ] **Step 4: cross-check every hash** on sepolia.etherscan.io and in `data/demo-state/audit-task_*.jsonl`. Each item of spec §11.2 审计材料表 must have a concrete value. Record them in `docs/superpowers/plans/2026-06-10-acceptance-record.md`.
+- [ ] **Step 5: run the UI flow once via the browser** (fresh task, same steps) to verify the demo-day driving surface: live per-tx progress during escrow execution, the pact status check, and the denial panel showing raw Cobo output.
+- [ ] **Step 6: fixture regression** — `PROOFMARKET_MODE=fixture pnpm test && pnpm demo:success && pnpm demo:challenge && pnpm demo:denial` all still green (challenge path must keep working; it remains the local mechanism demo).
+- [ ] **Step 7: final commit + tag**
 
 ```bash
 git add -A
@@ -2380,7 +2404,7 @@ git tag real-success-path-v1
 | Risk | Where handled |
 | --- | --- |
 | `caw` JSON field names differ from assumptions (`pact_id`/`tx_id`/`tx_hash`) | `parseLooseJson` + `pickString` try multiple keys; Task 10 Step 4 is the first live contact — if a field is missing, fix `pickString` key lists only, no structural change |
-| Pact approval requires pairing | Preflight hard-fails on `wallet_paired:false`; Task 10 Step 1 is explicitly Luke's |
+| Pairing changes approval behavior | Unpaired = auto-approve (verified), used for all testing; pairing is an optional Demo Day decision and forces a full re-acceptance (Task 10 Step 3b) |
 | `contract_call` policy cannot cap amounts | Mint only 100 mUSDC, budget 5, tx_count 7, 90 min expiry; talk track says "boundary = contract allowlist + tx count + expiry + tiny test balance" |
 | Claude output unstable | Strict validator + 1 retry + hard stop (Task 5); plan failure surfaces as a route 500 with the real error |
 | Sepolia slow during demo | `waitForReceipt` timeout 180s; Demo Day plan keeps a pre-run completed task (spec §15) |

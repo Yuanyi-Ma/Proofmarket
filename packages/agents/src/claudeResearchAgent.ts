@@ -47,6 +47,7 @@ export function buildResearchPrompt(context: ResearchContext): string {
       2
     ),
     "",
+    // NOTE: prompt injection via question is accepted — validateResearchPlanOutput is the security gate
     `User question: ${context.question}`,
     `Budget cap: ${context.budgetAmount} mUSDC`,
     `Allowed chain actions (use exactly these): ${ALLOWED_CHAIN_ACTIONS.join(", ")}`,
@@ -71,8 +72,22 @@ function runClaude(
       ["-p", "--output-format", "json", "--max-turns", "1"],
       { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout) => {
-        if (error) reject(new Error(`claude failed: ${error.message}`));
-        else resolve({ stdout: stdout ?? "" });
+        if (error) {
+          const err = error as NodeJS.ErrnoException & { killed?: boolean };
+          if (err.code === "ENOENT") {
+            reject(
+              new Error(
+                `claude binary not found (ENOENT) — set CLAUDE_BIN or install claude: ${claudeBin}`
+              )
+            );
+          } else if (err.killed) {
+            reject(new Error(`claude timed out after ${timeoutMs}ms (SIGTERM)`));
+          } else {
+            reject(new Error(`claude failed (exit ${err.code ?? "unknown"}): ${error.message}`));
+          }
+        } else {
+          resolve({ stdout: stdout ?? "" });
+        }
       }
     );
     child.stdin?.write(prompt);

@@ -105,6 +105,16 @@ describe("runClaudeResearchAgent", () => {
     );
   });
 
+  it("rejects with timeout message when claude exceeds timeoutMs", async () => {
+    const bin = fakeClaude("cat > /dev/null\nsleep 2");
+    await expect(
+      runClaudeResearchAgent(context, { claudeBin: bin, timeoutMs: 100 })
+    ).rejects.toThrow(/after retry/i);
+    await expect(
+      runClaudeResearchAgent(context, { claudeBin: bin, timeoutMs: 100 })
+    ).rejects.toThrow(/timed out after 100ms/i);
+  }, 10_000);
+
   it("counts attempts on flaky-then-good runs", async () => {
     // script fails first call, succeeds second — use a state file
     const stateDir = mkdtempSync(join(tmpdir(), "fake-claude-state-"));

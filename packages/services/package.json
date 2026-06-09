@@ -1,0 +1,23 @@
+{
+  "name": "@proofmarket/services",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run tests",
+    "dev": "tsx src/boot.ts"
+  },
+  "dependencies": {
+    "@proofmarket/shared": "workspace:*",
+    "@proofmarket/agents": "workspace:*",
+    "@proofmarket/chain": "workspace:*",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "tsx": "^4.19.2"
+  }
+}

@@ -66,6 +66,17 @@ export function runProvider(
             "State hotspots and storage I/O can dominate execution latency even when scheduling allows parallel execution.",
           relevanceExplanation:
             "This limits overclaims about parallel execution and explains why workload structure matters."
+        },
+        {
+          providerAnswer:
+            "EVM parallelization in Sei v2 and Monad achieves significant throughput gains through optimistic concurrency and pipelined execution stages.",
+          sourceTitle: "Sei v2: Parallelized EVM Execution",
+          sourceLocator: "mock-report:sei-v2-parallel-evm-2024",
+          sourceMetadata: { year: 2024, type: "report" },
+          excerptOrSummary:
+            "Sei v2 introduces a parallelized EVM that pipelines transaction execution, state access, and block commitment to maximize hardware utilization.",
+          relevanceExplanation:
+            "This provides a concrete production example of EVM parallelization beyond research prototypes."
         }
       ]
     };

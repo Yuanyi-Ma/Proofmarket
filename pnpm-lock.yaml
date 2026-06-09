@@ -130,6 +130,31 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  packages/services:
+    dependencies:
+      '@proofmarket/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@proofmarket/chain':
+        specifier: workspace:*
+        version: link:../chain
+      '@proofmarket/shared':
+        specifier: workspace:*
+        version: link:../shared
+      viem:
+        specifier: ^2.21.0
+        version: 2.52.2(typescript@5.9.3)
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.4
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.20)
+
   packages/shared:
     devDependencies:
       typescript:

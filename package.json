@@ -8,6 +8,7 @@
     "test": "pnpm -r test",
     "test:contracts": "pnpm --filter @proofmarket/contracts test",
     "test:e2e": "pnpm --filter @proofmarket/web test:e2e",
+    "dev:services": "pnpm --filter @proofmarket/services dev",
     "demo:success": "tsx scripts/run-demo-success.ts",
     "demo:challenge": "tsx scripts/run-demo-challenge.ts",
     "demo:denial": "tsx scripts/run-demo-denial.ts"

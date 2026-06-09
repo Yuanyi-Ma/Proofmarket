@@ -3,6 +3,7 @@ node_modules/
 *.log
 .env
 .env.*
+!.env.example
 .DS_Store
 data/demo-state/*
 !data/demo-state/.gitkeep

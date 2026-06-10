@@ -23,10 +23,17 @@ type ActionName =
   | "verify"
   | "settle"
   | "denial-demo"
+  | "open-challenge"
   | "challenge-win"
   | "refund-or-slash";
 
-const polledActions: ReadonlySet<string> = new Set(["execute", "provider", "settle"]);
+const polledActions: ReadonlySet<string> = new Set([
+  "execute",
+  "provider",
+  "settle",
+  "open-challenge",
+  "refund-or-slash"
+]);
 
 async function readTaskResponse(response: Response): Promise<Task> {
   const text = await response.text();
@@ -226,6 +233,9 @@ export default function Page() {
           <Step5Evidence
             task={task}
             onVerify={() => runAction("verify")}
+            onOpenChallenge={() => runAction("open-challenge")}
+            onRequestVote={() => runAction("challenge-win")}
+            onResolve={() => runAction("refund-or-slash")}
             isBusy={isBusy}
             readOnly={isReviewing}
           />

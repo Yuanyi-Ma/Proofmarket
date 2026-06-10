@@ -1029,6 +1029,75 @@ details[open] .evidence-item-summary::after {
   margin-top: 8px;
 }
 
+/* ---- Step 5: Deterministic challenge stages ---- */
+
+.challenge-stage {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.challenge-stage + .challenge-stage {
+  margin-top: 10px;
+}
+
+.challenge-stage--resolved {
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.challenge-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.challenge-stage--resolved .challenge-stage-header {
+  border-bottom-color: var(--ok);
+  color: var(--ok);
+}
+
+.challenge-stage-body {
+  display: grid;
+  gap: 0;
+  padding: 12px 14px 14px;
+}
+
+.challenge-materials {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: grid;
+  gap: 0;
+}
+
+.challenge-fund-actions {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.challenge-fund-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.challenge-fund-icon {
+  flex-shrink: 0;
+  color: var(--ok);
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1;
+}
+
 /* ---- Step 6: Done / Settlement Receipt ---- */
 
 .final-answer-section {

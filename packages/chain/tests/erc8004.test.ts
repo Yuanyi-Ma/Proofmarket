@@ -8,7 +8,11 @@ import {
 } from "viem";
 import type { Log, TransactionReceipt } from "viem";
 import { identityRegistryAbi, reputationRegistryAbi } from "../src/erc8004Abi";
-import { extractAgentId, ZERO_BYTES32 } from "../src/erc8004";
+import {
+  extractAgentId,
+  reputationSummaryToScore1000,
+  ZERO_BYTES32
+} from "../src/erc8004";
 
 const addr = (c: string) => `0x${c.padEnd(40, "0")}` as `0x${string}`;
 const identityAddr = addr("8004");
@@ -132,5 +136,26 @@ describe("giveFeedback calldata encoding", () => {
     expect(decoded.functionName).toBe("giveFeedback");
     expect(decoded.args).toHaveLength(8);
     expect(decoded.args).toEqual([...args]);
+  });
+});
+
+describe("reputationSummaryToScore1000", () => {
+  it("maps a 0-5 scaled summary onto the fixture 0-1000 scale", () => {
+    // P1-1 seed values: 480/2 → 4.80 → 960, 350/2 → 700, 200/2 → 400
+    expect(reputationSummaryToScore1000({ value: 480n, decimals: 2 })).toBe(960);
+    expect(reputationSummaryToScore1000({ value: 350n, decimals: 2 })).toBe(700);
+    expect(reputationSummaryToScore1000({ value: 200n, decimals: 2 })).toBe(400);
+    // Runtime feedback values: 500 → 5.00 → 1000, 100 → 1.00 → 200
+    expect(reputationSummaryToScore1000({ value: 500n, decimals: 2 })).toBe(1000);
+    expect(reputationSummaryToScore1000({ value: 100n, decimals: 2 })).toBe(200);
+  });
+
+  it("handles other decimals and clamps to [0, 1000]", () => {
+    expect(reputationSummaryToScore1000({ value: 5n, decimals: 0 })).toBe(1000);
+    expect(reputationSummaryToScore1000({ value: 4800n, decimals: 3 })).toBe(960);
+    expect(reputationSummaryToScore1000({ value: 0n, decimals: 2 })).toBe(0);
+    // Out-of-range summaries never escape the display scale
+    expect(reputationSummaryToScore1000({ value: 700n, decimals: 2 })).toBe(1000);
+    expect(reputationSummaryToScore1000({ value: -100n, decimals: 2 })).toBe(0);
   });
 });

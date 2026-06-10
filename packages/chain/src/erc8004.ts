@@ -141,6 +141,19 @@ export function createReputationClient(opts: {
   };
 }
 
+/**
+ * Maps an on-chain reputation summary (value scaled by 10^decimals on a 0-5
+ * scale, e.g. value 480 / decimals 2 → 4.80) to the fixture providerProfiles
+ * display scale of 0-1000 (4.80/5.00 → 960). Clamped to [0, 1000].
+ */
+export function reputationSummaryToScore1000(summary: {
+  value: bigint;
+  decimals: number;
+}): number {
+  const score = (Number(summary.value) / 10 ** summary.decimals) * 200;
+  return Math.max(0, Math.min(1000, Math.round(score)));
+}
+
 // ── Read helpers (public client, no key) ─────────────────────────────────────
 
 export async function readAgent(

@@ -30,7 +30,34 @@ function makeDeps(
         slashRewardBps: "5000"
       },
       resolver: `0x${"7".repeat(40)}`,
-      treasury: `0x${"8".repeat(40)}`
+      treasury: `0x${"8".repeat(40)}`,
+      providers: {
+        "execution-research-expert": {
+          address: `0x${"5".repeat(40)}`,
+          mintedUsdc: "20000000",
+          stakedAmount: "20000000",
+          stakePending: false,
+          agentId: 6388
+        },
+        "shallow-search-provider": {
+          address: `0x${"a".repeat(40)}`,
+          mintedUsdc: "20000000",
+          stakedAmount: "0",
+          stakePending: true,
+          agentId: 6389
+        },
+        "general-web-summary": {
+          address: `0x${"b".repeat(40)}`,
+          mintedUsdc: "20000000",
+          stakedAmount: "0",
+          stakePending: true,
+          agentId: 6390
+        }
+      },
+      erc8004: {
+        identityRegistry: `0x${"c".repeat(40)}`,
+        reputationRegistry: `0x${"d".repeat(40)}`
+      }
     },
     providerAddress: `0x${"5".repeat(40)}`,
     runResearchAgent: async (context) => ({
@@ -81,11 +108,24 @@ function makeDeps(
       calls.push(`resolveChallenge:${challengeId}:${result}`);
       return { txHash: `0x${"d".repeat(64)}` };
     },
+    publishFeedback: async ({ agentId, value, tag2 }) => {
+      calls.push(`publishFeedback:${agentId}:${value}:${tag2}`);
+      return { txHash: `0x${"f".repeat(64)}` };
+    },
+    readReputation: async (agentId) => {
+      calls.push(`readReputation:${agentId}`);
+      // Distinct per-agent scores so assertions can tell providers apart.
+      const scores: Record<number, number> = { 6388: 960, 6389: 400, 6390: 700 };
+      const score = scores[agentId];
+      if (score === undefined) throw new Error(`unknown agentId ${agentId}`);
+      return { score };
+    },
     services: {
-      runProvider: async () => ({
+      // Echo the requested providerId: feedback targets the provider that RAN.
+      runProvider: async ({ providerId }) => ({
         taskId: "t",
         providerAgentId: 1,
-        providerId: "execution-research-expert",
+        providerId,
         providerName: "Expert",
         coverageStatement: "covered",
         answers: [
@@ -177,7 +217,7 @@ describe("real task service", () => {
     const service = createRealTaskService(createInMemoryStore(), deps);
     const active = await driveToPactActive(service);
     const funded = await service.executeEscrow(active.id);
-    expect(deps.calls).toEqual([
+    expect(deps.calls.filter((c) => c.startsWith("cobo:"))).toEqual([
       "cobo:approve",
       "cobo:createJob",
       "cobo:setBudget",
@@ -511,7 +551,7 @@ describe("real task service", () => {
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect(String(rejected[0].reason)).toMatch(/already in progress/);
-    expect(deps.calls).toEqual([
+    expect(deps.calls.filter((c) => c.startsWith("cobo:"))).toEqual([
       "cobo:approve",
       "cobo:createJob",
       "cobo:setBudget",
@@ -567,6 +607,141 @@ describe("real task service", () => {
     const approve = stored.txRecords.find((record) => record.label === "approve");
     expect(approve?.status).toBe("failed");
     expect(approve?.coboTxId).toBe("tx-approve");
+  });
+
+  it("real-mode plan carries on-chain ERC-8004 reputation for every provider", async () => {
+    const deps = makeDeps();
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const created = await service.createTask("q", "5 test USDC");
+    const planned = await service.plan(created.id);
+    expect(deps.calls.filter((c) => c.startsWith("readReputation:"))).toEqual([
+      "readReputation:6388",
+      "readReputation:6389",
+      "readReputation:6390"
+    ]);
+    expect(planned.plan?.providerReputations).toEqual([
+      { providerId: "execution-research-expert", score: 960, source: "erc8004" },
+      { providerId: "shallow-search-provider", score: 400, source: "erc8004" },
+      { providerId: "general-web-summary", score: 700, source: "erc8004" }
+    ]);
+    // The recommended provider's card data is on-chain-derived
+    const recommended = planned.plan?.providerReputations?.find(
+      (r) => r.providerId === planned.plan?.recommendedProviderId
+    );
+    expect(recommended).toEqual({
+      providerId: "execution-research-expert",
+      score: 960,
+      source: "erc8004"
+    });
+    expect(planned.audit.some((e) => e.type === "reputation_loaded")).toBe(true);
+  });
+
+  it("falls back to fixture scores with an audit note when the reputation read fails", async () => {
+    const deps = makeDeps({
+      readReputation: async () => {
+        throw new Error("rpc unreachable");
+      }
+    });
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const created = await service.createTask("q", "5 test USDC");
+    const planned = await service.plan(created.id);
+    expect(planned.status).toBe("Planned"); // planning never breaks on a read failure
+    expect(planned.plan?.providerReputations).toEqual([
+      { providerId: "execution-research-expert", score: 970, source: "fixture" },
+      { providerId: "shallow-search-provider", score: 710, source: "fixture" },
+      { providerId: "general-web-summary", score: 820, source: "fixture" }
+    ]);
+    const fallback = planned.audit.find((e) => e.type === "reputation_read_fallback");
+    expect(fallback?.message).toContain("rpc unreachable");
+    expect(planned.audit.some((e) => e.type === "reputation_loaded")).toBe(false);
+  });
+
+  it("falls back to fixture scores when the artifact has no agentIds", async () => {
+    const deps = makeDeps();
+    delete deps.deployment.providers;
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const created = await service.createTask("q", "5 test USDC");
+    const planned = await service.plan(created.id);
+    expect(planned.plan?.providerReputations?.every((r) => r.source === "fixture")).toBe(true);
+    expect(deps.calls.some((c) => c.startsWith("readReputation:"))).toBe(false);
+    expect(
+      planned.audit.find((e) => e.type === "reputation_read_fallback")?.message
+    ).toContain("无 agentId");
+  });
+
+  it("settle publishes positive on-chain feedback for the job's provider", async () => {
+    const deps = makeDeps();
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    await service.runProvider(active.id, "execution-research-expert");
+    await service.verify(active.id);
+    const settled = await service.settle(active.id);
+    expect(settled.status).toBe("Settled");
+    // agentId 6388 (execution-research-expert), 500 = 5.00, tag2 job.completed
+    expect(deps.calls).toContain("publishFeedback:6388:500:job.completed");
+    const record = settled.txRecords.find((r) => r.label === "feedback");
+    expect(record?.status).toBe("confirmed");
+    expect(record?.txHash).toBe(`0x${"f".repeat(64)}`);
+    const event = settled.audit.find((e) => e.type === "reputation_feedback_published");
+    expect(event?.txHash).toBe(`0x${"f".repeat(64)}`);
+    expect(event?.message).toContain("好评");
+    expect(event?.message).toContain("5.00");
+  });
+
+  it("refundOrSlash publishes negative feedback for the at-fault provider", async () => {
+    const deps = makeDeps();
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    // The at-fault provider is the one that ran (shallow), not the recommended one.
+    await service.runProvider(active.id, "shallow-search-provider");
+    await service.openChallenge(active.id);
+    await service.winChallenge(active.id);
+    const refunded = await service.refundOrSlash(active.id);
+    expect(refunded.status).toBe("RefundedOrSlashed");
+    expect(deps.calls).toContain("publishFeedback:6389:100:challenge.coverage_miss");
+    const record = refunded.txRecords.find((r) => r.label === "feedback");
+    expect(record?.status).toBe("confirmed");
+    const event = refunded.audit.find((e) => e.type === "reputation_feedback_published");
+    expect(event?.message).toContain("差评");
+    expect(event?.message).toContain("1.00");
+  });
+
+  it("treats a feedback publish failure as non-fatal: settlement stands, failure audited", async () => {
+    const deps = makeDeps({
+      publishFeedback: async () => {
+        throw new Error("rater out of gas");
+      }
+    });
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    await service.runProvider(active.id, "execution-research-expert");
+    await service.verify(active.id);
+    const settled = await service.settle(active.id); // must NOT throw
+    expect(settled.status).toBe("Settled");
+    const record = settled.txRecords.find((r) => r.label === "feedback");
+    expect(record?.status).toBe("failed");
+    expect(record?.txHash).toBe(""); // no fabrication
+    const event = settled.audit.find((e) => e.type === "reputation_feedback_failed");
+    expect(event?.message).toContain("rater out of gas");
+    expect(event?.message).toContain("非致命");
+  });
+
+  it("skips feedback gracefully when the provider has no agentId in the artifact", async () => {
+    const deps = makeDeps();
+    delete deps.deployment.providers!["execution-research-expert"].agentId;
+    const service = createRealTaskService(createInMemoryStore(), deps);
+    const active = await driveToPactActive(service);
+    await service.executeEscrow(active.id);
+    await service.runProvider(active.id, "execution-research-expert");
+    await service.verify(active.id);
+    const settled = await service.settle(active.id);
+    expect(settled.status).toBe("Settled");
+    expect(deps.calls.some((c) => c.startsWith("publishFeedback:"))).toBe(false);
+    expect(settled.txRecords.some((r) => r.label === "feedback")).toBe(false);
+    expect(settled.audit.some((e) => e.type === "reputation_feedback_skipped")).toBe(true);
   });
 
   it("fails the record and names the poll count when polls are exhausted", async () => {

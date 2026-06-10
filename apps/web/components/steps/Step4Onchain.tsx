@@ -23,7 +23,8 @@ const TX_LABEL_MAP: Record<TxRecord["label"], string> = {
   complete: "结算放款",
   approveDeposit: "授权挑战押金",
   openChallenge: "发起挑战",
-  resolve: "执行裁决"
+  resolve: "执行裁决",
+  feedback: "链上信誉反馈"
 };
 
 function TxRow({ record }: { record: TxRecord }) {

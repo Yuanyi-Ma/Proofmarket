@@ -66,6 +66,14 @@ export type ProviderProfile = {
   demoBehavior: "happy" | "challenge" | "unused";
 };
 
+export type ProviderReputation = {
+  providerId: ProviderId;
+  /** Display score on the fixture 0-1000 scale (e.g. on-chain 4.80/5.00 → 960). */
+  score: number;
+  /** Where the score came from: live ERC-8004 read, or the local fixture fallback. */
+  source: "erc8004" | "fixture";
+};
+
 export type ProcurementPlan = {
   taskId: string;
   userQuestion: string;
@@ -77,6 +85,13 @@ export type ProcurementPlan = {
   coverage: string;
   returnType: "provider-answer-package";
   verificationMethod: string;
+  /**
+   * Real mode only: per-provider reputation read from the ERC-8004
+   * ReputationRegistry at plan time (fixture fallback per provider on read
+   * failure). Absent in fixture mode — the front-end keeps the local
+   * providerProfiles score there.
+   */
+  providerReputations?: ProviderReputation[];
 };
 
 export type PactSummary = {

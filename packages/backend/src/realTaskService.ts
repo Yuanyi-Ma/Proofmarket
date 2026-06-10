@@ -27,6 +27,7 @@ import type {
   ProcurementPlan,
   ProviderAnswerPackage,
   ProviderId,
+  ProviderReputation,
   Task,
   TaskStatus
 } from "@proofmarket/shared/src/types";
@@ -81,6 +82,22 @@ export type RealDeps = {
    * resolve() is resolver-only on-chain and does NOT go through Cobo.
    */
   resolveChallenge(input: { challengeId: bigint; result: number }): Promise<{ txHash: string }>;
+  /**
+   * Publishes ERC-8004 reputation feedback signed directly by the rater key
+   * (PROVIDER_SIGNER — must NOT be the agent owner), not Cobo. `value` is on
+   * the 0-500 raw scale (valueDecimals 2 → 500 = 5.00/5.00).
+   */
+  publishFeedback(input: {
+    agentId: number;
+    value: number;
+    tag2: string;
+  }): Promise<{ txHash: string }>;
+  /**
+   * Reads the ERC-8004 reputation summary for an agent, already mapped to the
+   * fixture 0-1000 display scale. Throws on RPC failure or when the agent has
+   * no on-chain feedback — the caller falls back to the fixture score.
+   */
+  readReputation(agentId: number): Promise<{ score: number }>;
   services: {
     runProvider(input: {
       taskId: string;
@@ -128,6 +145,10 @@ export type RealDeps = {
 const TX_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 const MAX_TX_POLLS = 60;
 const FAILED_TX_STATUSES = new Set(["failed", "rejected", "denied"]);
+
+// ERC-8004 feedback values, valueDecimals=2 (500 → 5.00 on a 0-5 scale).
+const FEEDBACK_POSITIVE_VALUE = 500; // job settled successfully
+const FEEDBACK_NEGATIVE_VALUE = 100; // challenge upheld against the provider
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -217,6 +238,99 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
       status,
       updatedAt: deps.now()
     };
+  }
+
+  /**
+   * Publishes ERC-8004 reputation feedback for the provider that ran the job,
+   * after the settlement outcome is already final.
+   *
+   * Failure policy (documented design choice): feedback is a post-settlement
+   * record, NOT part of the fund movement — if publishing fails (or the
+   * provider has no agentId in the artifact), we record a failed/skipped audit
+   * entry and return the task unchanged in status. No-fabrication still holds:
+   * only a real txHash is ever recorded, and a failure never invents one.
+   */
+  async function publishReputationFeedback(
+    task: Task,
+    input: { value: number; tag2: string; sentiment: "好评" | "差评" }
+  ): Promise<Task> {
+    // The provider that actually ran the job (not necessarily the recommended one).
+    const providerId =
+      task.providerPackage?.providerId ?? task.plan?.recommendedProviderId ?? null;
+    const agentId = providerId
+      ? deps.deployment.providers?.[providerId]?.agentId
+      : undefined;
+    if (agentId == null) {
+      // Graceful skip: provider not registered on ERC-8004 — note it, move on.
+      return save(
+        withAudit(
+          task,
+          audit({
+            taskId: task.id,
+            source: "chain",
+            type: "reputation_feedback_skipped",
+            result: "failed",
+            message:
+              `未发布链上信誉反馈（${input.sentiment}）：Provider ` +
+              `${providerId ?? "未知"} 在部署 artifact 中没有 ERC-8004 agentId` +
+              "（非致命，结算结果不受影响）。",
+            jobId: task.jobId
+          })
+        )
+      );
+    }
+
+    try {
+      const { txHash } = await deps.publishFeedback({
+        agentId,
+        value: input.value,
+        tag2: input.tag2
+      });
+      const record: TxRecord = {
+        label: "feedback",
+        coboTxId: null,
+        txHash,
+        status: "confirmed"
+      };
+      return save(
+        withAudit(
+          { ...task, txRecords: [...task.txRecords, record], updatedAt: deps.now() },
+          audit({
+            taskId: task.id,
+            source: "chain",
+            type: "reputation_feedback_published",
+            result: "success",
+            message:
+              `已发布链上信誉反馈（${input.sentiment}）：agentId ${agentId}，` +
+              `分值 ${(input.value / 100).toFixed(2)}/5.00，标签 ${input.tag2}。`,
+            txHash,
+            jobId: task.jobId
+          })
+        )
+      );
+    } catch (error) {
+      const failedRecord: TxRecord = {
+        label: "feedback",
+        coboTxId: null,
+        txHash: "",
+        status: "failed"
+      };
+      return save(
+        withAudit(
+          { ...task, txRecords: [...task.txRecords, failedRecord], updatedAt: deps.now() },
+          audit({
+            taskId: task.id,
+            source: "chain",
+            type: "reputation_feedback_failed",
+            result: "failed",
+            message:
+              `链上信誉反馈（${input.sentiment}）发布失败（非致命，结算结果不受影响）：` +
+              `${error instanceof Error ? error.message : String(error)}`,
+            jobId: task.jobId
+          })
+        )
+      );
+    }
   }
 
   function extractTxHash(parsed: Record<string, unknown>): string | null {
@@ -434,6 +548,39 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
       const recommendedProfile = providerProfiles.find(
         (profile) => profile.id === plan.recommendedProviderId
       );
+
+      // On-chain reputation for the provider cards (real mode): read the
+      // ERC-8004 summary per provider, mapped to the fixture 0-1000 scale.
+      // Read failure (or a missing agentId) falls back to the fixture score —
+      // a degraded read must never block planning.
+      const providerReputations: ProviderReputation[] = [];
+      const reputationFallbacks: string[] = [];
+      for (const profile of providerProfiles) {
+        const agentId = deps.deployment.providers?.[profile.id]?.agentId;
+        if (agentId == null) {
+          providerReputations.push({
+            providerId: profile.id,
+            score: profile.reputationScore,
+            source: "fixture"
+          });
+          reputationFallbacks.push(`${profile.id}（artifact 中无 agentId）`);
+          continue;
+        }
+        try {
+          const { score } = await deps.readReputation(agentId);
+          providerReputations.push({ providerId: profile.id, score, source: "erc8004" });
+        } catch (error) {
+          providerReputations.push({
+            providerId: profile.id,
+            score: profile.reputationScore,
+            source: "fixture"
+          });
+          reputationFallbacks.push(
+            `${profile.id}（${error instanceof Error ? error.message : String(error)}）`
+          );
+        }
+      }
+
       const procurementPlan: ProcurementPlan = {
         taskId: task.id,
         userQuestion: task.userQuestion,
@@ -444,7 +591,8 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         providerCount: 3,
         coverage: recommendedProfile?.coverage ?? "专项证据覆盖",
         returnType: "provider-answer-package",
-        verificationMethod: "确定性 Judge 校验端点"
+        verificationMethod: "确定性 Judge 校验端点",
+        providerReputations
       };
 
       const planned = transition(
@@ -457,7 +605,7 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         "Planned"
       );
 
-      return save(
+      let result = save(
         withAudit(
           planned,
           audit({
@@ -471,6 +619,42 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
           })
         )
       );
+
+      const onchainScores = providerReputations.filter((r) => r.source === "erc8004");
+      if (onchainScores.length > 0) {
+        result = save(
+          withAudit(
+            result,
+            audit({
+              taskId: id,
+              source: "chain",
+              type: "reputation_loaded",
+              result: "success",
+              message:
+                "已从 ERC-8004 信誉注册表读取链上信誉分：" +
+                onchainScores.map((r) => `${r.providerId}=${r.score}`).join("，") +
+                "。"
+            })
+          )
+        );
+      }
+      if (reputationFallbacks.length > 0) {
+        result = save(
+          withAudit(
+            result,
+            audit({
+              taskId: id,
+              source: "chain",
+              type: "reputation_read_fallback",
+              result: "failed",
+              message:
+                "链上信誉读取失败，以下 Provider 已回退本地预设分（非致命）：" +
+                reputationFallbacks.join("；")
+            })
+          )
+        );
+      }
+      return result;
     },
 
     async submitPact(id: string): Promise<Task> {
@@ -874,7 +1058,7 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
 
         const settled = transition(taskRef.task, "Settled");
 
-        return save(
+        const settledTask = save(
           withAudit(
             settled,
             audit({
@@ -887,6 +1071,14 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
             })
           )
         );
+
+        // Post-settlement: positive on-chain reputation feedback for the
+        // provider (real tx, rater key, non-fatal on failure — see helper).
+        return publishReputationFeedback(settledTask, {
+          value: FEEDBACK_POSITIVE_VALUE,
+          tag2: "job.completed",
+          sentiment: "好评"
+        });
       } finally {
         inFlight.delete(id);
       }
@@ -1115,7 +1307,7 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         });
 
         const refunded = transition(updated, "RefundedOrSlashed");
-        return save(
+        const refundedTask = save(
           withAudit(
             refunded,
             audit({
@@ -1131,6 +1323,14 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
             })
           )
         );
+
+        // Post-resolution: negative on-chain reputation feedback for the
+        // at-fault provider (real tx, rater key, non-fatal on failure).
+        return publishReputationFeedback(refundedTask, {
+          value: FEEDBACK_NEGATIVE_VALUE,
+          tag2: "challenge.coverage_miss",
+          sentiment: "差评"
+        });
       } finally {
         inFlight.delete(id);
       }

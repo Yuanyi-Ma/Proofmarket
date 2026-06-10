@@ -79,7 +79,10 @@ export type TxRecord = {
     // resolve is signed directly by the resolver key.
     | "approveDeposit"
     | "openChallenge"
-    | "resolve";
+    | "resolve"
+    // ERC-8004 reputation feedback after settle/refundOrSlash, signed directly
+    // by the rater key (PROVIDER_SIGNER), not Cobo.
+    | "feedback";
   coboTxId: string | null;
   txHash: string;
   status: "pending" | "confirmed" | "failed";

@@ -43,17 +43,21 @@ async function expectEvent(
 
 describe("ProofMarketEscrow", () => {
   const budget = 1_000_000n;
+  const minStake = 10_000_000n;
+  const challengeDeposit = 2_000_000n;
   const JobState = {
     Open: 0n,
     Funded: 1n,
     Submitted: 2n,
     Completed: 3n,
     Rejected: 4n,
-    Expired: 5n
+    Expired: 5n,
+    Challenged: 6n
   } as const;
 
   async function deployFixture() {
-    const [client, provider, evaluator, other] = await ethers.getSigners();
+    const [client, provider, evaluator, other, resolver, treasury] =
+      await ethers.getSigners();
 
     const Token = await ethers.getContractFactory("MockUSDC");
     const token = await Token.deploy();
@@ -61,6 +65,27 @@ describe("ProofMarketEscrow", () => {
 
     const Escrow = await ethers.getContractFactory("ProofMarketEscrow");
     const escrow = await Escrow.deploy();
+
+    const Manager = await ethers.getContractFactory(
+      "ProofMarketChallengeManager"
+    );
+    const manager = await Manager.deploy(
+      await token.getAddress(),
+      resolver.address,
+      treasury.address,
+      minStake,
+      challengeDeposit,
+      5_000n,
+      5_000n
+    );
+
+    await escrow.connect(client).setChallengeManager(await manager.getAddress());
+    await manager.connect(client).setEscrow(await escrow.getAddress());
+
+    // Stake the provider so createJob passes the min-stake gate.
+    await token.mint(provider.address, minStake);
+    await token.connect(provider).approve(await manager.getAddress(), minStake);
+    await manager.connect(provider).depositStake(minStake);
 
     const latestBlock = await ethers.provider.getBlock("latest");
     const expiredAt = BigInt((latestBlock?.timestamp ?? 0) + 1800);
@@ -74,8 +99,11 @@ describe("ProofMarketEscrow", () => {
       provider,
       evaluator,
       other,
+      resolver,
+      treasury,
       token,
       escrow,
+      manager,
       expiredAt,
       descriptionHash,
       coverageHash,
@@ -260,6 +288,107 @@ describe("ProofMarketEscrow", () => {
     await expectRevert(
       escrow.connect(evaluator).reject(1, reasonHash),
       "not rejectable"
+    );
+  });
+
+  it("rejects job creation for a provider below the minimum stake", async () => {
+    const fixture = await deployFixture();
+
+    await expectRevert(
+      fixture.escrow.createJob(
+        1,
+        fixture.other.address, // unstaked provider
+        4,
+        fixture.evaluator.address,
+        await fixture.token.getAddress(),
+        fixture.expiredAt,
+        fixture.descriptionHash,
+        fixture.coverageHash
+      ),
+      "provider stake too low"
+    );
+
+    // Partial stake below the minimum is still rejected.
+    await fixture.token.mint(fixture.other.address, minStake - 1n);
+    await fixture.token
+      .connect(fixture.other)
+      .approve(await fixture.manager.getAddress(), minStake - 1n);
+    await fixture.manager.connect(fixture.other).depositStake(minStake - 1n);
+
+    await expectRevert(
+      fixture.escrow.createJob(
+        1,
+        fixture.other.address,
+        4,
+        fixture.evaluator.address,
+        await fixture.token.getAddress(),
+        fixture.expiredAt,
+        fixture.descriptionHash,
+        fixture.coverageHash
+      ),
+      "provider stake too low"
+    );
+  });
+
+  it("rejects job creation when no challenge manager is wired", async () => {
+    const fixture = await deployFixture();
+
+    const Escrow = await ethers.getContractFactory("ProofMarketEscrow");
+    const bareEscrow = await Escrow.deploy();
+
+    await expectRevert(
+      bareEscrow.createJob(
+        1,
+        fixture.provider.address,
+        4,
+        fixture.evaluator.address,
+        await fixture.token.getAddress(),
+        fixture.expiredAt,
+        fixture.descriptionHash,
+        fixture.coverageHash
+      ),
+      "provider stake too low"
+    );
+  });
+
+  it("only the owner can set the challenge manager, and only once", async () => {
+    const fixture = await deployFixture();
+
+    const Escrow = await ethers.getContractFactory("ProofMarketEscrow");
+    const bareEscrow = await Escrow.deploy();
+
+    await expectRevert(
+      bareEscrow
+        .connect(fixture.other)
+        .setChallengeManager(await fixture.manager.getAddress()),
+      "only owner"
+    );
+
+    await bareEscrow.setChallengeManager(await fixture.manager.getAddress());
+    expect(await bareEscrow.challengeManager()).to.equal(
+      await fixture.manager.getAddress()
+    );
+
+    await expectRevert(
+      bareEscrow.setChallengeManager(await fixture.manager.getAddress()),
+      "challenge manager already set"
+    );
+  });
+
+  it("restricts challenge hooks to the challenge manager", async () => {
+    const { escrow, other } = await createAndFundJob();
+
+    await expectRevert(
+      escrow.connect(other).markChallenged(1),
+      "only challenge manager"
+    );
+    await expectRevert(
+      escrow.connect(other).refundForChallenge(1),
+      "only challenge manager"
+    );
+    await expectRevert(
+      escrow.connect(other).unfreezeForChallenge(1),
+      "only challenge manager"
     );
   });
 

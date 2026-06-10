@@ -6,6 +6,10 @@ interface IERC20Like {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 }
 
+interface IChallengeManagerView {
+    function hasMinStake(address provider) external view returns (bool);
+}
+
 contract ProofMarketEscrow {
     enum JobState {
         Open,
@@ -34,6 +38,8 @@ contract ProofMarketEscrow {
     }
 
     uint256 public nextJobId = 1;
+    address public owner;
+    address public challengeManager;
     mapping(uint256 => Job) public jobs;
 
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider);
@@ -42,6 +48,28 @@ contract ProofMarketEscrow {
     event JobCompleted(uint256 indexed jobId, bytes32 reasonHash);
     event JobRejected(uint256 indexed jobId, bytes32 reasonHash);
     event JobExpired(uint256 indexed jobId);
+    event JobChallenged(uint256 indexed jobId);
+    event JobRefundedForChallenge(uint256 indexed jobId);
+    event JobUnfrozenForChallenge(uint256 indexed jobId);
+    event ChallengeManagerSet(address indexed challengeManager);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyChallengeManager() {
+        require(msg.sender == challengeManager, "only challenge manager");
+        _;
+    }
+
+    function setChallengeManager(address challengeManager_) external {
+        require(msg.sender == owner, "only owner");
+        require(challengeManager == address(0), "challenge manager already set");
+        require(challengeManager_ != address(0), "challenge manager required");
+
+        challengeManager = challengeManager_;
+        emit ChallengeManagerSet(challengeManager_);
+    }
 
     function createJob(
         uint256 providerAgentId,
@@ -57,6 +85,11 @@ contract ProofMarketEscrow {
         require(evaluator != address(0), "evaluator required");
         require(token != address(0), "token required");
         require(expiredAt > block.timestamp, "expiry must be future");
+        require(
+            challengeManager != address(0) &&
+                IChallengeManagerView(challengeManager).hasMinStake(provider),
+            "provider stake too low"
+        );
 
         jobId = nextJobId++;
         jobs[jobId] = Job({
@@ -157,5 +190,39 @@ contract ProofMarketEscrow {
         require(IERC20Like(job.token).transfer(job.client, job.budget), "transfer failed");
 
         emit JobExpired(jobId);
+    }
+
+    function markChallenged(uint256 jobId) external onlyChallengeManager {
+        Job storage job = jobs[jobId];
+        require(job.client != address(0), "job not found");
+        require(
+            job.state == JobState.Funded || job.state == JobState.Submitted,
+            "not challengeable"
+        );
+
+        job.state = JobState.Challenged;
+
+        emit JobChallenged(jobId);
+    }
+
+    function refundForChallenge(uint256 jobId) external onlyChallengeManager {
+        Job storage job = jobs[jobId];
+        require(job.client != address(0), "job not found");
+        require(job.state == JobState.Challenged, "not challenged");
+
+        job.state = JobState.Rejected;
+        require(IERC20Like(job.token).transfer(job.client, job.budget), "transfer failed");
+
+        emit JobRefundedForChallenge(jobId);
+    }
+
+    function unfreezeForChallenge(uint256 jobId) external onlyChallengeManager {
+        Job storage job = jobs[jobId];
+        require(job.client != address(0), "job not found");
+        require(job.state == JobState.Challenged, "not challenged");
+
+        job.state = JobState.Submitted;
+
+        emit JobUnfrozenForChallenge(jobId);
     }
 }

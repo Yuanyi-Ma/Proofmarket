@@ -133,11 +133,20 @@ async function checkDeploymentArtifact(): Promise<ReturnType<typeof parseDeploym
 }
 
 function checkEnvVars(): void {
-  const required = ["SEPOLIA_RPC_URL", "COBO_WALLET_ADDRESS", "PROVIDER_SIGNER_ADDRESS"] as const;
+  const required = [
+    "SEPOLIA_RPC_URL",
+    "COBO_WALLET_ADDRESS",
+    "PROVIDER_SIGNER_ADDRESS",
+    "PROVIDER_SIGNER_PRIVATE_KEY"
+  ] as const;
+  // Vars whose values must never be printed — show only presence
+  const secretVars = new Set(["PROVIDER_SIGNER_PRIVATE_KEY"]);
   for (const varName of required) {
     const value = process.env[varName];
     if (!value) {
       fail(`env_${varName}`, `${varName} is not set. Add it to .env (see .env.example).`);
+    } else if (secretVars.has(varName)) {
+      pass(`env_${varName}`, "(set)");
     } else {
       pass(`env_${varName}`, value.slice(0, 20) + (value.length > 20 ? "…" : ""));
     }
@@ -206,10 +215,13 @@ async function checkServicesReachable(): Promise<void> {
       body: JSON.stringify({ taskId: "preflight-check", packageHash: "0x0000" }),
       signal: AbortSignal.timeout(5000)
     });
-    if (resp.status === 200) {
-      pass(name, `${url} returned 200`);
+    if (resp.status >= 500) {
+      fail(
+        name,
+        `${url} returned ${resp.status} — service is up but erroring. Check pnpm dev:services logs.`
+      );
     } else {
-      // Non-200 from a running service is still reachable (payload mismatch is ok for preflight)
+      // 2xx–4xx means the server is reachable; payload mismatch is ok for preflight
       pass(name, `${url} returned ${resp.status} (service is running)`);
     }
   } catch (err) {

@@ -80,8 +80,8 @@ Each check prints `PASS`, `FAIL`, or `INFO`. Fix any `FAIL` items before proceed
 |---|---|
 | `deployment_artifact` | Run the deploy command above |
 | `gas_cobo_wallet` | `caw faucet deposit` (Sepolia faucet; daily limit 0.02 SETH) |
-| `gas_deployer` | Send SETH to the deployer address via a Sepolia faucet |
-| `gas_provider_signer` | Send SETH to the provider signer address |
+| `gas_deployer` | Use a public Sepolia faucet (e.g. sepoliafaucet.com) or transfer from the Cobo wallet |
+| `gas_provider_signer` | Use a public Sepolia faucet (e.g. sepoliafaucet.com) or transfer from the Cobo wallet |
 | `services_reachable` | Start services: `pnpm dev:services` |
 
 ### Running the demo

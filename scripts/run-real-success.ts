@@ -32,10 +32,6 @@ async function readTaskResponse(response: Response): Promise<Task> {
   }
 
   if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload
-        ? String((payload as { error?: unknown }).error)
-        : text || `Request failed with status ${response.status}`;
     console.error(
       `HTTP ${response.status} from ${response.url}:\n${text.slice(0, 2000)}`
     );
@@ -52,11 +48,6 @@ async function postAction(path: string, body: unknown = {}): Promise<Task> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  return readTaskResponse(response);
-}
-
-async function getTask(taskId: string): Promise<Task> {
-  const response = await fetch(`${WEB_URL}/api/tasks/${taskId}`);
   return readTaskResponse(response);
 }
 
@@ -262,11 +253,8 @@ async function main(): Promise<void> {
 
   // Verify server is reachable before starting
   try {
-    const probe = await fetch(`${WEB_URL}/api/tasks`, { method: "HEAD" });
-    // Any response (even 405 Method Not Allowed) means server is up
-    if (!probe.ok && probe.status !== 405) {
-      // 405 is expected for HEAD on a POST-only route
-    }
+    // Any HTTP response means the web server is listening — no need to inspect the status
+    await fetch(`${WEB_URL}/api/tasks`, { method: "HEAD" });
   } catch (err) {
     console.error(
       `ERROR: Cannot reach web server at ${WEB_URL}.\n` +

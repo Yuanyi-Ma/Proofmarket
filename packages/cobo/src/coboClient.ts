@@ -5,6 +5,10 @@ import type { RealPactSubmission } from "./pactPolicy";
 export type CoboClientOptions = {
   pathPrepend?: string; // tests inject a fake caw directory
   timeoutMs?: number;
+  // Source wallet address for on-chain ops. Cobo's server-side auto-select of
+  // the highest-balance address is not reliable in every environment, so we
+  // pass --src-address explicitly when this is set (the Cobo wallet address).
+  srcAddress?: string;
 };
 
 export type PactSubmitResult = { pactId: string; status: string; raw: string };
@@ -153,7 +157,8 @@ export function createCliCoboClient(options: CoboClientOptions = {}): CoboClient
           "--request-id",
           input.requestId,
           "--description",
-          input.description
+          input.description,
+          ...(options.srcAddress ? ["--src-address", options.srcAddress] : [])
         ],
         "tx call"
       );
@@ -174,12 +179,15 @@ export function createCliCoboClient(options: CoboClientOptions = {}): CoboClient
         "transfer",
         "--pact-id",
         input.pactId,
+        "--chain-id",
+        "SETH",
         "--token-id",
         "SETH",
         "--dst-address",
         input.dstAddress,
         "--amount",
-        input.amount
+        input.amount,
+        ...(options.srcAddress ? ["--src-address", options.srcAddress] : [])
       ];
       const POLICY_DENIAL_EXIT = 5;
       const result = await runCaw(args, options);

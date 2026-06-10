@@ -72,6 +72,37 @@ describe("createCliCoboClient", () => {
     expect(result.coboTxId).toBe("tx-9");
   });
 
+  it("passes --src-address to tx call when srcAddress is configured", async () => {
+    const dir = fakeCaw(`echo "$@" > "$0.args"; echo '{"tx_id":"tx-1"}'`);
+    const client = createCliCoboClient({ pathPrepend: dir, srcAddress: "0x" + "e".repeat(40) });
+    await client.callContract({
+      pactId: "p-1",
+      contract: "0x" + "4".repeat(40),
+      calldata: "0x00",
+      requestId: "r",
+      description: "approve"
+    });
+    const { readFileSync } = await import("node:fs");
+    const args = readFileSync(join(dir, "caw.args"), "utf8");
+    expect(args).toContain("--src-address");
+    expect(args).toContain("0x" + "e".repeat(40));
+  });
+
+  it("omits --src-address when not configured", async () => {
+    const dir = fakeCaw(`echo "$@" > "$0.args"; echo '{"tx_id":"tx-1"}'`);
+    const client = createCliCoboClient({ pathPrepend: dir });
+    await client.callContract({
+      pactId: "p-1",
+      contract: "0x" + "4".repeat(40),
+      calldata: "0x00",
+      requestId: "r",
+      description: "approve"
+    });
+    const { readFileSync } = await import("node:fs");
+    const args = readFileSync(join(dir, "caw.args"), "utf8");
+    expect(args).not.toContain("--src-address");
+  });
+
   it("maps exit code 5 to a denial record instead of throwing", async () => {
     const dir = fakeCaw(`echo '{"error":"policy denied: no matching policy"}' >&2; exit 5`);
     const client = createCliCoboClient({ pathPrepend: dir });

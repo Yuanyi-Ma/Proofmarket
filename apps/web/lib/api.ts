@@ -38,7 +38,7 @@ function buildRealService(): TaskService {
   }
   const servicesUrl = process.env.SERVICES_URL ?? "http://localhost:4010";
   const chain = createChainReader(process.env.SEPOLIA_RPC_URL ?? "");
-  const cobo = createCliCoboClient({});
+  const cobo = createCliCoboClient({ srcAddress: deployment.coboWallet });
 
   async function post<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${servicesUrl}${path}`, {

@@ -374,6 +374,38 @@ export const challengeManagerAbi = [
   },
   {
     type: "function",
+    name: "jurySize",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }]
+  },
+  {
+    type: "function",
+    name: "minStake",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }]
+  },
+  {
+    type: "function",
+    name: "challengeDeposit",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }]
+  },
+  {
+    type: "function",
+    name: "jurors",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [
+      { name: "modelHash", type: "bytes32" },
+      { name: "promptHash", type: "bytes32" },
+      { name: "registered", type: "bool" }
+    ]
+  },
+  {
+    type: "function",
     name: "juryFee",
     stateMutability: "view",
     inputs: [],

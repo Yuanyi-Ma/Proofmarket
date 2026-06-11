@@ -31,6 +31,15 @@ async function main() {
   // Allow running just one path: `node capture-demo.mjs challenge`.
   const only = process.argv[2]; // undefined | "success" | "challenge"
 
+  // ─────────────────────────── SYSTEM INIT ───────────────────────────
+  if (only !== "challenge" && only !== "success") {
+  log("=== SYSTEM INIT (live chain reads) ===");
+  await page.goto(`${BASE}/system`, { waitUntil: "networkidle" });
+  await waitText("初始化完成判定", 60_000);
+  await page.waitForTimeout(500);
+  await shot("00-system-init");
+  }
+
   // ─────────────────────────── SUCCESS PATH ───────────────────────────
   if (only !== "challenge") {
   log("=== SUCCESS PATH ===");
@@ -125,6 +134,10 @@ async function main() {
   await waitBtn("获取证据", 360_000);
   await clickBtn("获取证据");
   await waitBtn("核验证据", 200_000);
+  // The branch point of the challenge flowchart: evidence delivered inside the
+  // challenge window, 核验证据 and 发起挑战 both on screen.
+  await page.waitForTimeout(800);
+  await shot("10b-challenge-branch-point");
 
   log("open challenge (deposit + fee + openChallenge + defense on-chain)…");
   await clickBtn("发起挑战");
@@ -136,6 +149,8 @@ async function main() {
 
   log("request jury verdict (waits out R_w 120s, then 3 castVote txs)…");
   await clickBtn("请求审判团裁决");
+  await page.waitForTimeout(2_000);
+  await shot("11b-jury-deliberating");
   await page.getByText("审判团投票 2 : 1", { exact: false }).waitFor({ state: "visible", timeout: 600_000 });
   await page.waitForTimeout(500);
   await shot("12-challenge-vote");

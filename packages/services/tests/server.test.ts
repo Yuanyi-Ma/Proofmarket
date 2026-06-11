@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { startServicesServer, type RunningServer, type SubmitOnChain } from "../src/server";
+import {
+  startServicesServer,
+  type JuryVoterEntry,
+  type RunningServer,
+  type SubmitOnChain
+} from "../src/server";
 import { runProvider, hashProviderAnswerPackage } from "@proofmarket/agents/src/providers";
+import { presetDefense, presetJuryVotes } from "@proofmarket/shared/src/fixtures";
 
 let server: RunningServer;
 
@@ -8,15 +14,38 @@ let server: RunningServer;
 const stubSubmit: SubmitOnChain = async () => ({ txHash: "0x" + "f".repeat(64) });
 
 let serverWithSigner: RunningServer;
+let serverWithJury: RunningServer;
+
+// Records every on-chain call the jury/defense stubs receive.
+const castCalls: { challengeId: bigint; result: number; reasonHash: string }[] = [];
+const defenseCalls: { challengeId: bigint; defenseHash: string }[] = [];
+const stubJurors: JuryVoterEntry[] = [0, 1, 2].map((i) => ({
+  jurorAddress: `0x${String(i + 1).repeat(40)}`,
+  castVote: async (input) => {
+    castCalls.push(input);
+    return { txHash: "0x" + `${i + 1}`.repeat(64) };
+  }
+}));
 
 beforeAll(async () => {
   server = await startServicesServer({ port: 0, submitOnChain: null }); // null = no signer in tests
   serverWithSigner = await startServicesServer({ port: 0, submitOnChain: stubSubmit });
+  serverWithJury = await startServicesServer({
+    port: 0,
+    submitOnChain: stubSubmit,
+    defenseOnChain: async (input) => {
+      defenseCalls.push(input);
+      return { txHash: "0x" + "d".repeat(64) };
+    },
+    juryVoters: stubJurors,
+    defenseWindowMs: 0 // window already passed in tests: no sleeping
+  });
 });
 
 afterAll(async () => {
   await server.close();
   await serverWithSigner.close();
+  await serverWithJury.close();
 });
 
 describe("provider endpoint", () => {
@@ -171,53 +200,92 @@ describe("judge endpoint", () => {
   });
 });
 
-describe("resolver vote endpoint (deterministic challenge arbitration)", () => {
-  const voteInput = {
-    jobId: "7",
-    challengeType: "CoverageMiss",
-    evidencePackage: runProvider("task_001", "shallow-search-provider"),
-    counterEvidenceHash: "0x" + "e".repeat(64)
-  };
-
-  it("always votes ProviderFault with COVERAGE_MISS and a Chinese reason", async () => {
-    const response = await fetch(`${server.url}/resolver/vote`, {
+describe("defense endpoint (/provider/defend)", () => {
+  it("submits the preset defense hash on-chain and returns the plaintext", async () => {
+    defenseCalls.length = 0;
+    const response = await fetch(`${serverWithJury.url}/provider/defend`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(voteInput)
+      body: JSON.stringify({ challengeId: "3" })
     });
     expect(response.status).toBe(200);
     const body = await response.json() as Record<string, unknown>;
-    expect(body.voterId).toBe("resolver-demo-001");
-    expect(body.jobId).toBe("7");
-    expect(body.vote).toBe("ProviderFault");
-    expect(body.reasonCode).toBe("COVERAGE_MISS");
-    expect(body.reason as string).toContain("声明覆盖");
-    expect(body.resultHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(body.statement).toBe(presetDefense.statement);
+    expect(body.defenseHash).toBe(presetDefense.defenseHash);
+    expect(body.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(defenseCalls).toEqual([
+      { challengeId: 3n, defenseHash: presetDefense.defenseHash }
+    ]);
   });
 
-  it("is deterministic: same input, same resultHash; different input, different hash", async () => {
-    const call = (input: unknown) =>
-      fetch(`${server.url}/resolver/vote`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
-      }).then((r) => r.json() as Promise<Record<string, unknown>>);
-    const [a, b] = await Promise.all([call(voteInput), call(voteInput)]);
-    expect(a.resultHash).toBe(b.resultHash);
-    const c = await call({ ...voteInput, jobId: "8" });
-    expect(c.resultHash).not.toBe(a.resultHash);
+  it("503s without a provider signer and 400s on a bad challengeId", async () => {
+    const noSigner = await fetch(`${server.url}/provider/defend`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "3" })
+    });
+    expect(noSigner.status).toBe(503);
+
+    const bad = await fetch(`${serverWithJury.url}/provider/defend`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "abc" })
+    });
+    expect(bad.status).toBe(400);
+  });
+});
+
+describe("jury endpoint (/jury/vote, preset 2:1 verdict)", () => {
+  it("casts three on-chain votes (2 fault, 1 dissent) with reason books and tx hashes", async () => {
+    castCalls.length = 0;
+    const response = await fetch(`${serverWithJury.url}/jury/vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "3", openedAtMs: Date.now() - 60_000 })
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { votes: Record<string, unknown>[] };
+    expect(body.votes).toHaveLength(3);
+
+    const expected = presetJuryVotes(stubJurors.map((j) => j.jurorAddress));
+    expect(body.votes.map((v) => v.vote)).toEqual([
+      "ProviderFault",
+      "ProviderFault",
+      "ProviderNotFault"
+    ]);
+    for (const [i, vote] of body.votes.entries()) {
+      expect(vote.jurorId).toBe(expected[i].jurorId);
+      expect(vote.jurorAddress).toBe(stubJurors[i].jurorAddress);
+      expect(vote.reasonHash).toBe(expected[i].reasonHash);
+      expect(vote.reasonBook).toEqual(expected[i].reasonBook);
+      expect(vote.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    }
+    // The on-chain calls carried the same reason hashes, fault=1 / notFault=2.
+    expect(castCalls.map((c) => c.result)).toEqual([1, 1, 2]);
+    expect(castCalls.map((c) => c.reasonHash)).toEqual(expected.map((v) => v.reasonHash));
   });
 
-  it("returns 400 for a non-numeric jobId, missing challengeType, or malformed counterEvidenceHash", async () => {
-    const call = (input: unknown) =>
-      fetch(`${server.url}/resolver/vote`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
-      });
-    expect((await call({ ...voteInput, jobId: "abc" })).status).toBe(400);
-    expect((await call({ ...voteInput, challengeType: "" })).status).toBe(400);
-    expect((await call({ ...voteInput, counterEvidenceHash: "not-a-hash" })).status).toBe(400);
+  it("503s without jury voters and 400s on bad input", async () => {
+    const noJury = await fetch(`${server.url}/jury/vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "3", openedAtMs: Date.now() })
+    });
+    expect(noJury.status).toBe(503);
+
+    const badId = await fetch(`${serverWithJury.url}/jury/vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "abc", openedAtMs: Date.now() })
+    });
+    expect(badId.status).toBe(400);
+
+    const badOpenedAt = await fetch(`${serverWithJury.url}/jury/vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ challengeId: "3" })
+    });
+    expect(badOpenedAt.status).toBe(400);
   });
 });
 

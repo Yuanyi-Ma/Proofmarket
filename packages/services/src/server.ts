@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { verifyPackage } from "@proofmarket/agents/src/verifierAgent";
 import { runProvider } from "@proofmarket/agents/src/providers";
-import { stableHash, type JsonValue } from "@proofmarket/shared/src/hash";
-import type { ProviderAnswerPackage, ProviderId } from "@proofmarket/shared/src/types";
+import { presetDefense, presetJuryVotes } from "@proofmarket/shared/src/fixtures";
+import type { JuryVote, ProviderAnswerPackage, ProviderId } from "@proofmarket/shared/src/types";
 
 const VALID_PROVIDER_IDS = new Set<ProviderId>([
   "execution-research-expert",
@@ -18,6 +18,20 @@ export type SubmitOnChain = (input: {
   jobId: bigint;
   deliverableHash: `0x${string}`;
 }) => Promise<{ txHash: string }>;
+
+export type DefenseOnChain = (input: {
+  challengeId: bigint;
+  defenseHash: `0x${string}`;
+}) => Promise<{ txHash: string }>;
+
+export type JuryVoterEntry = {
+  jurorAddress: string;
+  castVote: (input: {
+    challengeId: bigint;
+    result: number;
+    reasonHash: `0x${string}`;
+  }) => Promise<{ txHash: string }>;
+};
 
 export type RunningServer = { url: string; close(): Promise<void> };
 
@@ -55,6 +69,10 @@ function send(response: ServerResponse, status: number, body: unknown): void {
 export async function startServicesServer(options: {
   port: number;
   submitOnChain: SubmitOnChain | null;
+  defenseOnChain?: DefenseOnChain | null;
+  juryVoters?: JuryVoterEntry[] | null;
+  /** Defense window R_w in ms; /jury/vote sleeps out the remainder. */
+  defenseWindowMs?: number;
 }): Promise<RunningServer> {
   const server: Server = createServer(async (request, response) => {
     try {
@@ -169,41 +187,68 @@ export async function startServicesServer(options: {
         return;
       }
 
-      if (request.method === "POST" && request.url === "/resolver/vote") {
-        // Deterministic challenge arbitration ("审判者确定性投票"): the vote is
-        // PRESET to ProviderFault by design — the demo validates the dispute
-        // protocol and fund movements, not AI arbitration quality. This is
-        // separate from /judge/verify, which is the success-path verification.
-        const jobId = String(body.jobId ?? "");
-        if (!JOB_ID_RE.test(jobId)) {
-          send(response, 400, { error: `jobId must be a numeric string, got: ${jobId}` });
+      if (request.method === "POST" && request.url === "/provider/defend") {
+        // The challenged provider's defense filing (应辩书): preset content by
+        // design, but the submitDefense transaction is real and provider-signed.
+        if (!options.defenseOnChain) {
+          send(response, 503, { error: "provider signer not configured" });
           return;
         }
-        const challengeType = typeof body.challengeType === "string" ? body.challengeType : "";
-        if (!challengeType) {
-          send(response, 400, { error: "challengeType is required" });
+        const rawChallengeId = String(body.challengeId ?? "");
+        if (!JOB_ID_RE.test(rawChallengeId)) {
+          send(response, 400, { error: `challengeId must be a numeric string, got: ${rawChallengeId}` });
           return;
         }
-        const counterEvidenceHash = String(body.counterEvidenceHash ?? "");
-        if (!DELIVERABLE_HASH_RE.test(counterEvidenceHash)) {
-          send(response, 400, {
-            error: `counterEvidenceHash must match /^0x[0-9a-fA-F]{64}$/, got: ${counterEvidenceHash}`
-          });
-          return;
-        }
-        const evidencePackage = (body.evidencePackage ?? null) as JsonValue;
-
-        const vote = "ProviderFault";
-        send(response, 200, {
-          voterId: "resolver-demo-001",
-          jobId,
-          vote,
-          reasonCode: "COVERAGE_MISS",
-          reason:
-            "Provider 声明覆盖 2021-2026 年区块链执行加速方向，却遗漏了 Block-STM——" +
-            "声明范围内直接相关的代表性来源。覆盖缺失成立，判 Provider 失职。",
-          resultHash: stableHash({ jobId, challengeType, counterEvidenceHash, evidencePackage, vote })
+        const result = await options.defenseOnChain({
+          challengeId: BigInt(rawChallengeId),
+          defenseHash: presetDefense.defenseHash as `0x${string}`
         });
+        send(response, 200, {
+          statement: presetDefense.statement,
+          defenseHash: presetDefense.defenseHash,
+          txHash: result.txHash
+        });
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/jury/vote") {
+        // The jury panel (审判团): three independent operators, preset 2:1
+        // verdict by design — the demo validates the dispute protocol and fund
+        // movements, not AI arbitration quality. Each vote is a real castVote
+        // transaction signed by that juror's own key. The contract enforces
+        // the defense window (R_w) on-chain; we sleep out the remainder here so
+        // the votes land instead of reverting.
+        if (!options.juryVoters || options.juryVoters.length === 0) {
+          send(response, 503, { error: "jury voters not configured" });
+          return;
+        }
+        const rawChallengeId = String(body.challengeId ?? "");
+        if (!JOB_ID_RE.test(rawChallengeId)) {
+          send(response, 400, { error: `challengeId must be a numeric string, got: ${rawChallengeId}` });
+          return;
+        }
+        const openedAtMs = Number(body.openedAtMs ?? 0);
+        if (!Number.isFinite(openedAtMs) || openedAtMs <= 0) {
+          send(response, 400, { error: `openedAtMs must be a positive epoch-ms number, got: ${String(body.openedAtMs)}` });
+          return;
+        }
+
+        const waitMs = openedAtMs + (options.defenseWindowMs ?? 0) + 5_000 - Date.now();
+        if (waitMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+
+        const votes = presetJuryVotes(options.juryVoters.map((v) => v.jurorAddress));
+        const cast: (JuryVote & { txHash: string })[] = [];
+        for (const [i, vote] of votes.entries()) {
+          const { txHash } = await options.juryVoters[i].castVote({
+            challengeId: BigInt(rawChallengeId),
+            result: vote.vote === "ProviderFault" ? 1 : 2,
+            reasonHash: vote.reasonHash as `0x${string}`
+          });
+          cast.push({ ...vote, txHash });
+        }
+        send(response, 200, { votes: cast });
         return;
       }
 

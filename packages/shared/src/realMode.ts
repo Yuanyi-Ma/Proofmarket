@@ -41,7 +41,26 @@ export type DeploymentArtifact = {
     challengeDeposit: string;
     slashBps: string;
     slashRewardBps: string;
+    /** Jury fee F in raw token units (v2 jury deployments). */
+    juryFee?: string;
+    /** Provider defense window R_w in seconds (v2). */
+    defenseWindow?: string;
+    /** Jury size N (v2). */
+    jurySize?: string;
   };
+  /** Constructor parameters used for ProofMarketEscrow (v2). */
+  escrowParams?: {
+    /** Challenge window W_c in seconds: complete() blocked until it passes. */
+    challengeWindow: string;
+  };
+  /** Registered jury operators in seat order (v2). */
+  jurors?: {
+    jurorId: string;
+    address: string;
+    modelFamily: string;
+    modelTag: string;
+    promptTag: string;
+  }[];
   /** Resolver address (backend/verifier in demo). */
   resolver?: string;
   /** Protocol treasury address. */
@@ -83,10 +102,13 @@ export type TxRecord = {
     | "fund"
     | "submit"
     | "complete"
-    // Challenge path: deposit approval + openChallenge go through Cobo,
-    // resolve is signed directly by the resolver key.
+    // Challenge path: deposit approval + openChallenge go through Cobo;
+    // defense (provider key), castVote (juror keys) and resolve (any key —
+    // permissionless majority execution) are signed directly.
     | "approveDeposit"
     | "openChallenge"
+    | "defense"
+    | "castVote"
     | "resolve"
     // ERC-8004 reputation feedback after settle/refundOrSlash, signed directly
     // by the rater key (PROVIDER_SIGNER), not Cobo.

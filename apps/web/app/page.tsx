@@ -94,6 +94,23 @@ export default function Page() {
     };
   }, [busyAction, taskId]);
 
+  // Resume an in-flight task after a page reload: /?taskId=task_002 loads the
+  // server-side task state and re-enters the wizard at the matching step.
+  // Wizard state is otherwise client-only, so without this a refresh (or a
+  // crashed capture session) would strand a live on-chain task.
+  useEffect(() => {
+    const resumeId = new URLSearchParams(window.location.search).get("taskId");
+    if (!resumeId) return;
+    (async () => {
+      try {
+        const response = await fetch(`/api/tasks/${resumeId}`);
+        if (response.ok) setTask((await response.json()) as Task);
+      } catch {
+        // Best-effort: a bad taskId just leaves the fresh-task screen.
+      }
+    })();
+  }, []);
+
   async function createTask(question: string, budget: string) {
     if (isBusy) return;
 

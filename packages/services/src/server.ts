@@ -239,14 +239,27 @@ export async function startServicesServer(options: {
         }
 
         const votes = presetJuryVotes(options.juryVoters.map((v) => v.jurorAddress));
-        const cast: (JuryVote & { txHash: string })[] = [];
+        const cast: (JuryVote & { txHash: string | null })[] = [];
         for (const [i, vote] of votes.entries()) {
-          const { txHash } = await options.juryVoters[i].castVote({
-            challengeId: BigInt(rawChallengeId),
-            result: vote.vote === "ProviderFault" ? 1 : 2,
-            reasonHash: vote.reasonHash as `0x${string}`
-          });
-          cast.push({ ...vote, txHash });
+          try {
+            const { txHash } = await options.juryVoters[i].castVote({
+              challengeId: BigInt(rawChallengeId),
+              result: vote.vote === "ProviderFault" ? 1 : 2,
+              reasonHash: vote.reasonHash as `0x${string}`
+            });
+            cast.push({ ...vote, txHash });
+          } catch (error) {
+            // Idempotent resume: a retried request may find this juror's vote
+            // already on-chain from a previous partially-failed attempt. The
+            // vote content is deterministic, so treat it as cast (the tx hash
+            // from the earlier attempt is unknown here).
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("already voted")) {
+              cast.push({ ...vote, txHash: null });
+              continue;
+            }
+            throw error;
+          }
         }
         send(response, 200, { votes: cast });
         return;

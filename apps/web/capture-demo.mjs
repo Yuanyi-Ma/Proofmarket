@@ -82,8 +82,20 @@ async function main() {
   await shot("07b-step6-window-closed");
 
   log("settle (on-chain)…");
-  await clickBtn("确认结算");
-  await waitText("最终回答", 200_000);
+  // The settle Cobo call occasionally hits transient API errors; the task
+  // stays Verified, so clicking again retries safely.
+  let settled = false;
+  for (let attempt = 1; attempt <= 3 && !settled; attempt++) {
+    await clickBtn("确认结算");
+    try {
+      await waitText("最终回答", 200_000);
+      settled = true;
+    } catch {
+      log(`settle attempt ${attempt} did not land, retrying…`);
+      await waitBtn("确认结算", 30_000); // back to Verified with button re-enabled
+    }
+  }
+  if (!settled) throw new Error("settle failed after 3 attempts");
   await page.waitForTimeout(800);
   await shot("08-step6-settled");
   } // end success path

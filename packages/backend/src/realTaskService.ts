@@ -871,13 +871,25 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         await coboCall(taskRef, "fund", escrowAddress, encodeFund(jobId, budgetRaw));
 
         // Post-fund readback: the chain is the source of truth, not the
-        // sequence of confirmed receipts. State 1 = Funded.
-        const jobState = await deps.chain.readJobState(escrowAddress, jobId);
-        if (jobState.state !== 1 || jobState.budget !== budgetRaw) {
+        // sequence of confirmed receipts. State 1 = Funded. Public RPC
+        // endpoints sometimes serve a lagging replica right after a tx
+        // confirms (or hiccup outright), so poll a few times before declaring
+        // a mismatch — a stale read must not strand a correctly funded job.
+        let jobState: { state: number; budget: bigint } | null = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            jobState = await deps.chain.readJobState(escrowAddress, jobId);
+            if (jobState.state === 1 && jobState.budget === budgetRaw) break;
+          } catch {
+            jobState = null;
+          }
+          if (attempt < 4) await delay(pollDelayMs);
+        }
+        if (!jobState || jobState.state !== 1 || jobState.budget !== budgetRaw) {
           throw new Error(
             `post-fund readback mismatch for job ${jobId}: ` +
-              `state=${jobState.state} (expected 1 Funded), ` +
-              `budget=${jobState.budget} (expected ${budgetRaw})`
+              `state=${jobState?.state} (expected 1 Funded), ` +
+              `budget=${jobState?.budget} (expected ${budgetRaw})`
           );
         }
         taskRef.task = save(
@@ -1015,11 +1027,23 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
         )
       );
 
-      // Integrity check: never trust the service response alone — the chain is the source of truth.
-      const jobState = await deps.chain.readJobState(escrowAddress, BigInt(task.jobId));
-      if (jobState.deliverableHash.toLowerCase() !== providerPackage.packageHash.toLowerCase()) {
+      // Integrity check: never trust the service response alone — the chain is
+      // the source of truth. Poll a few times: a lagging RPC replica right
+      // after the submit confirmation must not fail a correct delivery.
+      let deliverableOnChain = "";
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          const jobState = await deps.chain.readJobState(escrowAddress, BigInt(task.jobId));
+          deliverableOnChain = jobState.deliverableHash;
+          if (deliverableOnChain.toLowerCase() === providerPackage.packageHash.toLowerCase()) break;
+        } catch {
+          deliverableOnChain = "";
+        }
+        if (attempt < 4) await delay(pollDelayMs);
+      }
+      if (deliverableOnChain.toLowerCase() !== providerPackage.packageHash.toLowerCase()) {
         throw new Error(
-          `on-chain deliverable hash mismatch: chain has ${jobState.deliverableHash}, ` +
+          `on-chain deliverable hash mismatch: chain has ${deliverableOnChain}, ` +
             `provider package is ${providerPackage.packageHash}`
         );
       }

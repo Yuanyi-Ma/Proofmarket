@@ -4,7 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Step5Evidence } from "../components/steps/Step5Evidence";
-import type { Task, ProviderAnswerPackage, TaskChallenge, ChallengeVote } from "@proofmarket/shared/src/types";
+import { presetDefense, presetJuryVotes } from "@proofmarket/shared/src/fixtures";
+import type { Task, ProviderAnswerPackage, TaskChallenge } from "@proofmarket/shared/src/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -40,22 +41,19 @@ const pkg: ProviderAnswerPackage = {
 const COUNTER_EVIDENCE_HASH =
   "0xdeadbeef11111111111111111111111111111111111111111111111111111111ab";
 
-const RESULT_HASH =
-  "0xcafe000000000000000000000000000000000000000000000000000000000001";
-
 const challengeFixture: TaskChallenge = {
   type: "CoverageMiss",
-  counterEvidenceHash: COUNTER_EVIDENCE_HASH
+  statement: "交付的证据包未包含 Block-STM——承诺范围内的代表性工作，属于覆盖漏检。",
+  hitCoverageClause: "覆盖声明：『2021-2026 年区块链执行加速方向（IEEE / Elsevier）』",
+  counterEvidenceHash: COUNTER_EVIDENCE_HASH,
+  defense: { ...presetDefense }
 };
 
-const voteFixture: ChallengeVote = {
-  voterId: "resolver-demo-001",
-  vote: "ProviderFault",
-  reasonCode: "COVERAGE_MISS",
-  reason:
-    "Provider 声明覆盖 2021-2026 年区块链执行加速方向，却遗漏了 Block-STM，覆盖缺失成立。",
-  resultHash: RESULT_HASH
-};
+const votesFixture = presetJuryVotes([
+  "0x0000000000000000000000000000000000000a01",
+  "0x0000000000000000000000000000000000000a02",
+  "0x0000000000000000000000000000000000000a03"
+]);
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -171,6 +169,30 @@ describe("Step5Evidence — challenge entry at Delivered", () => {
   });
 });
 
+describe("Step5Evidence — challenge window banner (real mode)", () => {
+  it("shows a ticking countdown while the window is open", () => {
+    const endsAt = new Date(Date.now() + 120_000).toISOString();
+    render(
+      <Step5Evidence
+        task={task({ mode: "real", status: "Delivered", challengeWindowEndsAt: endsAt })}
+        {...defaultProps}
+      />
+    );
+    expect(screen.getByTestId("challenge-window-banner").textContent).toContain("挑战窗口剩余");
+  });
+
+  it("announces a closed window once it has passed", () => {
+    const endsAt = new Date(Date.now() - 1_000).toISOString();
+    render(
+      <Step5Evidence
+        task={task({ mode: "real", status: "Delivered", challengeWindowEndsAt: endsAt })}
+        {...defaultProps}
+      />
+    );
+    expect(screen.getByTestId("challenge-window-banner").textContent).toContain("挑战窗口已结束");
+  });
+});
+
 describe("Step5Evidence — Challenged stage", () => {
   const challengedTask = task({
     status: "Challenged",
@@ -185,7 +207,13 @@ describe("Step5Evidence — Challenged stage", () => {
   it("shows challenge type CoverageMiss with Chinese label", () => {
     render(<Step5Evidence task={challengedTask} {...defaultProps} />);
     expect(screen.getAllByText(/CoverageMiss/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/覆盖声明漏检/)).toBeTruthy();
+    expect(screen.getAllByText(/覆盖声明漏检/).length).toBeGreaterThan(0);
+  });
+
+  it("shows the deposit D and jury fee F as separate locked rows", () => {
+    render(<Step5Evidence task={challengedTask} {...defaultProps} />);
+    expect(screen.getByText("挑战押金 D")).toBeTruthy();
+    expect(screen.getByText("审判费 F")).toBeTruthy();
   });
 
   it("shows counterEvidenceHash in mono", () => {
@@ -194,16 +222,23 @@ describe("Step5Evidence — Challenged stage", () => {
     expect(hashes.length).toBeGreaterThan(0);
   });
 
-  it("shows 提交给审判者的材料 panel with provider summary", () => {
+  it("shows the 挑战书 panel with statement and coverage clause", () => {
     render(<Step5Evidence task={challengedTask} {...defaultProps} />);
-    expect(screen.getByText("提交给审判者的材料")).toBeTruthy();
-    // Provider name appears in both the package header and the materials panel
-    expect(screen.getAllByText(/区块链执行研究专家/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/挑战书（提交给审判团的材料）/)).toBeTruthy();
+    expect(screen.getByText(challengeFixture.statement)).toBeTruthy();
+    expect(screen.getAllByText(challengeFixture.hitCoverageClause).length).toBeGreaterThan(0);
   });
 
-  it("shows 请求审判 action button", () => {
+  it("shows the provider defense card with plaintext and hash", () => {
     render(<Step5Evidence task={challengedTask} {...defaultProps} />);
-    expect(screen.getByRole("button", { name: /请求审判/ })).toBeTruthy();
+    expect(screen.getByText(/Provider 应辩书/)).toBeTruthy();
+    expect(screen.getByText(presetDefense.statement)).toBeTruthy();
+    expect(screen.getByText(presetDefense.defenseHash)).toBeTruthy();
+  });
+
+  it("shows 请求审判团裁决 action button", () => {
+    render(<Step5Evidence task={challengedTask} {...defaultProps} />);
+    expect(screen.getByRole("button", { name: /请求审判团裁决/ })).toBeTruthy();
   });
 
   it("shows real-mode tx records when present", () => {
@@ -223,41 +258,57 @@ describe("Step5Evidence — Challenged stage", () => {
           coboTxId: null,
           txHash: "0xbbb0000000000000000000000000000000000000000000000000000000000002",
           status: "confirmed"
+        },
+        {
+          label: "defense",
+          coboTxId: null,
+          txHash: "0xccc0000000000000000000000000000000000000000000000000000000000003",
+          status: "confirmed"
         }
       ]
     });
     render(<Step5Evidence task={realTask} {...defaultProps} />);
     // Should show 链上交易 section label
     expect(screen.getByText("链上交易")).toBeTruthy();
-    // Should show both tx labels
-    expect(screen.getByText("授权挑战押金")).toBeTruthy();
+    // Should show all three tx labels
+    expect(screen.getByText("授权押金 + 审判费")).toBeTruthy();
     expect(screen.getByText("发起挑战（链上）")).toBeTruthy();
+    expect(screen.getByText("提交应辩书（链上）")).toBeTruthy();
   });
 });
 
-describe("Step5Evidence — ChallengeWon stage", () => {
+describe("Step5Evidence — ChallengeWon stage (jury verdict)", () => {
   const wonTask = task({
     status: "ChallengeWon",
-    challenge: { ...challengeFixture, vote: voteFixture }
+    challenge: { ...challengeFixture, votes: votesFixture }
   });
 
-  it("shows ProviderFault verdict heading", () => {
+  it("shows the 2:1 majority verdict heading", () => {
     render(<Step5Evidence task={wonTask} {...defaultProps} />);
-    expect(screen.getByText(/ProviderFault/)).toBeTruthy();
+    expect(screen.getByText(/审判团投票 2 : 1/)).toBeTruthy();
     expect(screen.getByText(/覆盖声明漏检，挑战成立/)).toBeTruthy();
   });
 
-  it("shows vote reason text", () => {
+  it("renders one vote card per juror with model families", () => {
     render(<Step5Evidence task={wonTask} {...defaultProps} />);
-    // Block-STM appears in both evidence items and the vote reason text
-    expect(screen.getAllByText(/Block-STM/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/覆盖缺失成立/)).toBeTruthy();
+    for (const vote of votesFixture) {
+      expect(screen.getByTestId(`jury-vote-${vote.jurorId}`)).toBeTruthy();
+      expect(screen.getAllByText(new RegExp(vote.modelFamily)).length).toBeGreaterThan(0);
+    }
   });
 
-  it("shows resultHash in mono", () => {
+  it("marks the dissenting vote and shows its reason book", () => {
     render(<Step5Evidence task={wonTask} {...defaultProps} />);
-    const hashes = screen.getAllByText(RESULT_HASH);
-    expect(hashes.length).toBeGreaterThan(0);
+    expect(screen.getByText(/NotFault（异议）/)).toBeTruthy();
+    const dissent = votesFixture.find((v) => v.vote === "ProviderNotFault")!;
+    expect(screen.getByText(dissent.reasonBook.conclusion)).toBeTruthy();
+  });
+
+  it("shows reason-book hashes (on-chain commitments)", () => {
+    render(<Step5Evidence task={wonTask} {...defaultProps} />);
+    for (const vote of votesFixture) {
+      expect(screen.getByText(vote.reasonHash)).toBeTruthy();
+    }
   });
 
   it("shows 执行裁决 button", () => {
@@ -277,7 +328,7 @@ describe("Step5Evidence — RefundedOrSlashed stage", () => {
     status: "RefundedOrSlashed",
     challenge: {
       ...challengeFixture,
-      vote: voteFixture,
+      votes: votesFixture,
       resolvedTxHash: null
     }
   });
@@ -288,11 +339,17 @@ describe("Step5Evidence — RefundedOrSlashed stage", () => {
     expect(screen.getAllByText(/裁决已执行/).length).toBeGreaterThan(0);
   });
 
-  it("shows three fund action lines", () => {
+  it("shows the fund action lines including the jury fee", () => {
     render(<Step5Evidence task={resolvedTask} {...defaultProps} />);
     expect(screen.getByText(/扣除 Provider 质押 50%/)).toBeTruthy();
     expect(screen.getByText(/托管资金退款买方/)).toBeTruthy();
-    expect(screen.getByText(/挑战者押金退回/)).toBeTruthy();
+    expect(screen.getByText(/挑战者押金 \+ 审判费全额退回/)).toBeTruthy();
+    expect(screen.getByText(/三位审判方均分/)).toBeTruthy();
+  });
+
+  it("notes the appeal path as future work", () => {
+    render(<Step5Evidence task={resolvedTask} {...defaultProps} />);
+    expect(screen.getByText(/上诉窗口与扩编重审/)).toBeTruthy();
   });
 
   it("shows resolve txHash with etherscan link in real mode", () => {
@@ -301,7 +358,7 @@ describe("Step5Evidence — RefundedOrSlashed stage", () => {
       mode: "real",
       challenge: {
         ...challengeFixture,
-        vote: voteFixture,
+        votes: votesFixture,
         resolvedTxHash: "0xffff000000000000000000000000000000000000000000000000000000000099"
       },
       txRecords: [
@@ -382,7 +439,7 @@ describe("Step5Evidence — legacy status badges (status labels)", () => {
         task={task({
           mode: "fixture",
           status: "ChallengeWon",
-          challenge: { ...challengeFixture, vote: voteFixture }
+          challenge: { ...challengeFixture, votes: votesFixture }
         })}
         {...defaultProps}
       />
@@ -396,7 +453,7 @@ describe("Step5Evidence — legacy status badges (status labels)", () => {
         task={task({
           mode: "fixture",
           status: "RefundedOrSlashed",
-          challenge: { ...challengeFixture, vote: voteFixture }
+          challenge: { ...challengeFixture, votes: votesFixture }
         })}
         {...defaultProps}
       />

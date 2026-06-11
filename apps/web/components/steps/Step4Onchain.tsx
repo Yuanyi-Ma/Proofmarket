@@ -21,8 +21,10 @@ const TX_LABEL_MAP: Record<TxRecord["label"], string> = {
   fund: "注入托管资金",
   submit: "提交证据",
   complete: "结算放款",
-  approveDeposit: "授权挑战押金",
+  approveDeposit: "授权押金 + 审判费",
   openChallenge: "发起挑战",
+  defense: "提交应辩书",
+  castVote: "审判投票",
   resolve: "执行裁决",
   feedback: "链上信誉反馈"
 };

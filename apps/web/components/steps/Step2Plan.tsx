@@ -128,6 +128,14 @@ export function Step2Plan({
                         </span>
                       </span>
                       <span className="candidate-fact">
+                        <span className="data-label">挑战记录</span>
+                        <span className="mono">
+                          {profile.challengeStats.challenged === 0
+                            ? "无挑战记录"
+                            : `被挑战 ${profile.challengeStats.challenged} 次 / 成立 ${profile.challengeStats.upheld} 次`}
+                        </span>
+                      </span>
+                      <span className="candidate-fact">
                         <span className="data-label">链上身份</span>
                         <span className="mono">
                           <a

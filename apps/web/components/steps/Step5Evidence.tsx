@@ -1,13 +1,14 @@
 import React from "react";
-import type { Task, TaskChallenge, ChallengeVote } from "@proofmarket/shared/src/types";
+import type { JuryVote, Task, TaskChallenge } from "@proofmarket/shared/src/types";
 import type { TxRecord } from "@proofmarket/shared/src/realMode";
 import { presetCounterEvidence } from "@proofmarket/shared/src/fixtures";
 import { isFullTxHash, sepoliaTxUrl, shortHash } from "../../lib/links";
+import { formatCountdown, useCountdown } from "../../lib/useCountdown";
 import { StepShell } from "../StepShell";
 
-// Materials handed to the judge. The counter-evidence plaintext is shown in
-// full; only its hash is committed on-chain, so anyone can verify the plaintext
-// was not altered. challenge.counterEvidenceHash is that on-chain commitment.
+// 挑战书 + counter-evidence handed to the jury. All plaintext is shown in
+// full; only its hash is committed on-chain, so anyone can verify the
+// plaintext was not altered. challenge.counterEvidenceHash is that commitment.
 function ChallengeMaterials({
   task,
   challenge
@@ -18,7 +19,7 @@ function ChallengeMaterials({
   return (
     <div className="challenge-materials" style={{ marginTop: 14 }}>
       <p className="section-kicker" style={{ margin: "0 0 8px" }}>
-        提交给审判者的材料
+        挑战书（提交给审判团的材料）
       </p>
       <div className="data-row">
         <span className="data-label">Provider 证据包</span>
@@ -32,7 +33,16 @@ function ChallengeMaterials({
         <span className="data-label">挑战类型</span>
         <div className="data-value">
           <span className="mono">{challenge.type}</span>
+          <span className="muted small"> — 承诺范围内漏检（L2）</span>
         </div>
+      </div>
+      <div className="data-row" style={{ marginTop: 6 }}>
+        <span className="data-label">挑战者陈述</span>
+        <div className="data-value">{challenge.statement}</div>
+      </div>
+      <div className="data-row" style={{ marginTop: 6 }}>
+        <span className="data-label">命中声明条款</span>
+        <div className="data-value">{challenge.hitCoverageClause}</div>
       </div>
       <div className="data-row" style={{ marginTop: 6 }}>
         <span className="data-label">反证来源</span>
@@ -50,9 +60,112 @@ function ChallengeMaterials({
         <div className="data-value mono">{challenge.counterEvidenceHash}</div>
       </div>
       <p className="small muted tight" style={{ marginTop: 6 }}>
-        上方为提交给审判者的反证明文；协议只把它的哈希写入链上，任何人可按哈希核对明文未被篡改。
+        上方为提交给审判团的明文；协议只把它的哈希写入链上，任何人可按哈希核对明文未被篡改。审判团不轻信提交件，会自行访问定位符核对原文。
       </p>
     </div>
+  );
+}
+
+// The provider's defense statement (应辩书), filed within the defense window.
+function DefenseCard({ challenge }: { challenge: TaskChallenge }) {
+  const defense = challenge.defense;
+  const txLink = defense?.txHash && isFullTxHash(defense.txHash) ? sepoliaTxUrl(defense.txHash) : null;
+  return (
+    <div className="challenge-materials" style={{ marginTop: 14 }} data-testid="defense-card">
+      <p className="section-kicker" style={{ margin: "0 0 8px" }}>
+        Provider 应辩书（应辩窗口内提交）
+      </p>
+      {defense ? (
+        <>
+          <div className="data-row">
+            <span className="data-label">应辩陈述（明文）</span>
+            <div className="data-value">{defense.statement}</div>
+          </div>
+          <div className="data-row" style={{ marginTop: 6 }}>
+            <span className="data-label">应辩书哈希</span>
+            <div className="data-value mono">
+              {txLink ? (
+                <a
+                  className="hash"
+                  href={txLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="在 Etherscan 查看应辩书提交交易"
+                >
+                  {defense.defenseHash}
+                </a>
+              ) : (
+                defense.defenseHash
+              )}
+            </div>
+          </div>
+          <p className="small muted tight" style={{ marginTop: 6 }}>
+            审判团必须等应辩窗口结束才能投票（强制兼听）；放弃应辩不影响裁决进行。
+          </p>
+        </>
+      ) : (
+        <div className="info-strip">Provider 未在应辩窗口内提交应辩书（视同放弃应辩）。</div>
+      )}
+    </div>
+  );
+}
+
+// One juror's reasoned vote: model family, direction, and the three-question
+// reason book whose hash went on-chain with the castVote transaction.
+function JuryVoteCard({ vote, index }: { vote: JuryVote; index: number }) {
+  const isFault = vote.vote === "ProviderFault";
+  const txLink = vote.txHash && isFullTxHash(vote.txHash) ? sepoliaTxUrl(vote.txHash) : null;
+  return (
+    <details className="evidence-item-row" data-testid={`jury-vote-${vote.jurorId}`} open={index === 0}>
+      <summary className="evidence-item-summary">
+        <span className="evidence-item-index">{index + 1}</span>
+        <span className="evidence-item-title">
+          {vote.jurorId}
+          <span className="muted small">（{vote.modelFamily}）</span>
+        </span>
+        <span className={`status-badge ${isFault ? "danger" : "warning"}`}>
+          {isFault ? "ProviderFault" : "NotFault（异议）"}
+        </span>
+      </summary>
+      <div className="evidence-item-body">
+        <div className="data-row">
+          <span className="data-label">范围内？</span>
+          <div className="data-value">{vote.reasonBook.inScope}</div>
+        </div>
+        <div className="data-row">
+          <span className="data-label">命中声明？</span>
+          <div className="data-value">{vote.reasonBook.hitsDeclaredQuery}</div>
+        </div>
+        <div className="data-row">
+          <span className="data-label">未返回且未排除？</span>
+          <div className="data-value">{vote.reasonBook.notReturnedNotExcluded}</div>
+        </div>
+        <div className="data-row">
+          <span className="data-label">结论</span>
+          <div className="data-value">{vote.reasonBook.conclusion}</div>
+        </div>
+        <div className="data-row">
+          <span className="data-label">理由书哈希</span>
+          <div className="data-value mono">{vote.reasonHash}</div>
+        </div>
+        {txLink && (
+          <div className="data-row">
+            <span className="data-label">投票交易</span>
+            <div className="data-value">
+              <a
+                className="hash"
+                href={txLink}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`在 Etherscan 查看 ${vote.jurorId} 的投票交易`}
+              >
+                {shortHash(vote.txHash!)}
+              </a>
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -169,11 +282,13 @@ function EvidenceItem({
   );
 }
 
-// Renders a tx row for challenge-related records (approveDeposit / openChallenge / resolve).
+// Renders a tx row for challenge-related records.
 function ChallengeTxRow({ record }: { record: TxRecord }) {
   const labelMap: Record<string, string> = {
-    approveDeposit: "授权挑战押金",
+    approveDeposit: "授权押金 + 审判费",
     openChallenge: "发起挑战（链上）",
+    defense: "提交应辩书（链上）",
+    castVote: "审判投票（链上）",
     resolve: "执行裁决（链上）"
   };
   const label = labelMap[record.label] ?? record.label;
@@ -233,7 +348,7 @@ function ChallengeStage1({
   readOnly: boolean;
 }) {
   const challengeTxRecords = task.txRecords.filter(
-    (r) => r.label === "approveDeposit" || r.label === "openChallenge"
+    (r) => r.label === "approveDeposit" || r.label === "openChallenge" || r.label === "defense"
   );
   const isRealMode = task.mode === "real";
 
@@ -254,10 +369,17 @@ function ChallengeStage1({
           </div>
         </div>
         <div className="data-row" style={{ marginTop: 6 }}>
-          <span className="data-label">挑战者押金</span>
+          <span className="data-label">挑战押金 D</span>
           <div className="data-value">
             <span className="dot danger" style={{ verticalAlign: "middle", marginRight: 6 }} aria-hidden="true" />
-            已锁定
+            2 mUSDC 已锁定（挑战失败没收入金库）
+          </div>
+        </div>
+        <div className="data-row" style={{ marginTop: 6 }}>
+          <span className="data-label">审判费 F</span>
+          <div className="data-value">
+            <span className="dot danger" style={{ verticalAlign: "middle", marginRight: 6 }} aria-hidden="true" />
+            0.5 mUSDC 已锁定（审判团均分；挑战成功则由扣罚承担、全额退回）
           </div>
         </div>
         <div className="data-row" style={{ marginTop: 6 }}>
@@ -280,8 +402,11 @@ function ChallengeStage1({
           </div>
         )}
 
-        {/* Materials for the judge */}
+        {/* 挑战书 for the jury */}
         <ChallengeMaterials task={task} challenge={challenge} />
+
+        {/* Provider 应辩书 */}
+        <DefenseCard challenge={challenge} />
 
         {/* Action */}
         {!readOnly && (
@@ -292,7 +417,7 @@ function ChallengeStage1({
               disabled={isBusy}
               aria-busy={isBusy ? "true" : undefined}
             >
-              {isBusy ? "请求审判…" : "请求审判"}
+              {isBusy ? "审判团裁决中（等待应辩窗口结束 + 三票上链）…" : "请求审判团裁决"}
             </button>
           </div>
         )}
@@ -301,49 +426,51 @@ function ChallengeStage1({
   );
 }
 
-// Stage 2: 审判者投票已完成 (status = ChallengeWon)
+// Stage 2: 审判团投票已完成 (status = ChallengeWon)
 function ChallengeStage2({
   task,
   challenge,
-  vote,
+  votes,
   onResolve,
   isBusy,
   readOnly,
 }: {
   task: Task;
   challenge: TaskChallenge;
-  vote: ChallengeVote;
+  votes: JuryVote[];
   onResolve: () => void;
   isBusy: boolean;
   readOnly: boolean;
 }) {
+  const faultVotes = votes.filter((vote) => vote.vote === "ProviderFault").length;
+  const dissent = votes.length - faultVotes;
+
   return (
-    <div className="challenge-stage" aria-label="审判者投票结果">
+    <div className="challenge-stage" aria-label="审判团投票结果">
       <div className="challenge-stage-header">
         <span className="dot danger" aria-hidden="true" />
-        <strong>审判者投票：{vote.vote}（覆盖声明漏检，挑战成立）</strong>
+        <strong>
+          审判团投票 {faultVotes} : {dissent} — ProviderFault（覆盖声明漏检，挑战成立）
+        </strong>
       </div>
 
       <div className="challenge-stage-body">
-        <div className="data-row">
-          <span className="data-label">审判者</span>
-          <div className="data-value mono">{vote.voterId}</div>
+        <p className="small muted tight" style={{ margin: "0 0 8px" }}>
+          三个独立审判运营方（异构模型家族）各自核对原文后投票，理由书哈希随票上链。
+          多数决生效——异议票也完整留痕。
+        </p>
+        <div className="evidence-items-list">
+          {votes.map((vote, i) => (
+            <JuryVoteCard key={vote.jurorId} vote={vote} index={i} />
+          ))}
         </div>
-        <div className="data-row" style={{ marginTop: 6 }}>
-          <span className="data-label">原因码</span>
-          <div className="data-value mono">{vote.reasonCode}</div>
-        </div>
-        <div className="data-row" style={{ marginTop: 6 }}>
-          <span className="data-label">理由</span>
-          <div className="data-value">{vote.reason}</div>
-        </div>
-        <div className="data-row" style={{ marginTop: 6 }}>
-          <span className="data-label">结果哈希</span>
-          <div className="data-value mono">{vote.resultHash}</div>
-        </div>
+        <p className="small muted tight" style={{ marginTop: 8 }}>
+          各审判方的模型版本哈希与审判 prompt 哈希在注册时已承诺上链，任何人可按承诺参数离线重跑复核任一票。
+        </p>
 
         {/* Materials panel (still visible for reference) */}
         <ChallengeMaterials task={task} challenge={challenge} />
+        <DefenseCard challenge={challenge} />
 
         {/* Action */}
         {!readOnly && (
@@ -354,7 +481,7 @@ function ChallengeStage2({
               disabled={isBusy}
               aria-busy={isBusy ? "true" : undefined}
             >
-              {isBusy ? "执行裁决…" : "执行裁决"}
+              {isBusy ? "执行裁决…" : "执行裁决（多数已达成，任何人可执行）"}
             </button>
           </div>
         )}
@@ -384,11 +511,11 @@ function ChallengeStage3({
       </div>
 
       <div className="challenge-stage-body">
-        {/* Fund actions — three lines, one per effect */}
+        {/* Fund actions — one line per effect (§4.3 资金流) */}
         <div className="challenge-fund-actions">
           <div className="challenge-fund-row">
             <span className="challenge-fund-icon" aria-hidden="true">—</span>
-            <span>扣除 Provider 质押 50%（一半奖励挑战者）</span>
+            <span>扣除 Provider 质押 50%（5 mUSDC，一半奖励挑战者）</span>
           </div>
           <div className="challenge-fund-row">
             <span className="challenge-fund-icon" aria-hidden="true">—</span>
@@ -396,9 +523,16 @@ function ChallengeStage3({
           </div>
           <div className="challenge-fund-row">
             <span className="challenge-fund-icon" aria-hidden="true">—</span>
-            <span>挑战者押金退回</span>
+            <span>挑战者押金 + 审判费全额退回</span>
+          </div>
+          <div className="challenge-fund-row">
+            <span className="challenge-fund-icon" aria-hidden="true">—</span>
+            <span>审判费 0.5 mUSDC 由扣罚承担，三位审判方均分，余额归入金库</span>
           </div>
         </div>
+        <p className="small muted tight" style={{ marginTop: 8 }}>
+          上诉窗口与扩编重审（3 → 5 席）：后续可做。
+        </p>
 
         {/* Real mode: resolve tx */}
         {resolvedTxHash && (
@@ -451,6 +585,8 @@ export function Step5Evidence({
   const status = task?.status;
   const isDelivered = status === "Delivered";
   const isRealMode = task?.mode === "real";
+  // Challenge window W_c countdown — drives the banner under Delivered.
+  const windowRemaining = useCountdown(task?.challengeWindowEndsAt);
 
   const { text: statusText, tone: statusTone } = statusLabel(task);
   const verdictHash = findVerdictHash(task);
@@ -615,27 +751,27 @@ export function Step5Evidence({
             />
           )}
 
-          {/* Stage 2: ChallengeWon — verdict rendered */}
-          {isChallengeWon && challenge.vote && (
+          {/* Stage 2: ChallengeWon — jury verdict rendered */}
+          {isChallengeWon && challenge.votes && challenge.votes.length > 0 && (
             <ChallengeStage2
               task={task!}
               challenge={challenge}
-              vote={challenge.vote}
+              votes={challenge.votes}
               onResolve={onResolve}
               isBusy={isBusy}
               readOnly={readOnly}
             />
           )}
 
-          {/* ChallengeWon but no vote yet (edge case in real mode, show waiting) */}
-          {isChallengeWon && !challenge.vote && (
+          {/* ChallengeWon but no votes yet (edge case in real mode, show waiting) */}
+          {isChallengeWon && (!challenge.votes || challenge.votes.length === 0) && (
             <div className="challenge-stage" aria-label="等待审判结果">
               <div className="challenge-stage-header">
                 <span className="dot pending" aria-hidden="true" />
-                <strong>等待审判者投票…</strong>
+                <strong>等待审判团投票…</strong>
               </div>
               <div className="challenge-stage-body">
-                <div className="info-strip">审判者正在处理，请稍候。</div>
+                <div className="info-strip">审判团正在处理，请稍候。</div>
               </div>
             </div>
           )}
@@ -650,11 +786,20 @@ export function Step5Evidence({
         </div>
       )}
 
-      {/* ── 挑战说明（real 模式）──────────────────────────── */}
+      {/* ── 挑战窗口与挑战说明（real 模式）──────────────────── */}
       {isDelivered && isRealMode && (
-        <div className="info-strip" style={{ marginTop: 16 }}>
+        <div className="info-strip" style={{ marginTop: 16 }} data-testid="challenge-window-banner">
           <span className="small">
-            若对证据有异议，可发起挑战：锁定押金 → 独立审判者裁决 → 链上扣罚 / 退款，全过程上链可查。
+            {windowRemaining > 0 ? (
+              <>
+                挑战窗口剩余 <span className="mono">{formatCountdown(windowRemaining)}</span>
+                ，窗口结束前合约拒绝放款。
+              </>
+            ) : task?.challengeWindowEndsAt ? (
+              <>挑战窗口已结束，订单可正常结算。</>
+            ) : null}
+            {" "}若对证据有异议，可发起挑战：锁定押金 + 审判费 → Provider 应辩 →
+            审判团（3 个异构模型运营方）多数决 → 链上扣罚 / 退款，全过程上链可查。
           </span>
         </div>
       )}

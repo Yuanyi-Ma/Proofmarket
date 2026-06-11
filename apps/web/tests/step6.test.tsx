@@ -346,3 +346,35 @@ describe("Step6Done — Audited state", () => {
     expect(screen.getByText(/凭证清单/)).toBeTruthy();
   });
 });
+
+describe("Step6Done — challenge window gate (W_c)", () => {
+  it("disables settlement with a countdown while the window is open", () => {
+    const endsAt = new Date(Date.now() + 120_000).toISOString();
+    render(
+      <Step6Done
+        task={task({ status: "Verified", challengeWindowEndsAt: endsAt })}
+        onSettle={noop}
+        onReset={noop}
+        onOpenAudit={noop}
+      />
+    );
+    const btn = screen.getByRole("button", { name: /挑战窗口剩余/ });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("settle-window-note").textContent).toContain("挑战窗口剩余");
+  });
+
+  it("re-enables 确认结算 once the window has passed", () => {
+    const endsAt = new Date(Date.now() - 1_000).toISOString();
+    render(
+      <Step6Done
+        task={task({ status: "Verified", challengeWindowEndsAt: endsAt })}
+        onSettle={noop}
+        onReset={noop}
+        onOpenAudit={noop}
+      />
+    );
+    const btn = screen.getByRole("button", { name: /确认结算/ });
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId("settle-window-note").textContent).toContain("挑战窗口已结束");
+  });
+});

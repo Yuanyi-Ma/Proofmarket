@@ -1,6 +1,7 @@
 import React from "react";
 import type { Task } from "@proofmarket/shared/src/types";
 import { isFullTxHash, sepoliaTxUrl, shortHash } from "../../lib/links";
+import { formatCountdown, useCountdown } from "../../lib/useCountdown";
 import { StepShell } from "../StepShell";
 
 type Step6DoneProps = {
@@ -19,6 +20,7 @@ const TX_LABEL_ZH: Record<string, string> = {
   fund: "注入托管资金",
   submit: "提交证据",
   complete: "结算放款",
+  feedback: "信誉反馈",
 };
 
 // Try to extract a verdict hash from the audit trail.
@@ -104,6 +106,11 @@ export function Step6Done({
   const isVerified = status === "Verified";
   const isSettled = status === "Settled" || status === "Audited";
 
+  // Challenge window W_c: settlement stays locked (matching the on-chain
+  // escrow gate) until the window after evidence submission has passed.
+  const windowRemaining = useCountdown(task?.challengeWindowEndsAt);
+  const windowOpen = isVerified && windowRemaining > 0;
+
   const verdictHash = findVerdictHash(task);
   const { conclusion, evidenceSummary, cannotConclude } = buildFinalAnswer(task);
 
@@ -117,9 +124,11 @@ export function Step6Done({
 
   if (isVerified) {
     primary = {
-      label: "确认结算",
+      label: windowOpen
+        ? `挑战窗口剩余 ${formatCountdown(windowRemaining)} 后可结算`
+        : "确认结算",
       onClick: onSettle,
-      disabled: isBusy,
+      disabled: isBusy || windowOpen,
       busy: isBusy,
     };
   } else if (isSettled) {
@@ -147,9 +156,20 @@ export function Step6Done({
     >
       {/* ── 结算待确认提示 (Verified, not yet settled) ── */}
       {isVerified && (
-        <div className="info-strip" style={{ marginBottom: 20 }}>
-          <span className="dot ok" aria-hidden="true" />
-          {" "}证据已通过核验。点击「确认结算」在链上完成付款。
+        <div className="info-strip" style={{ marginBottom: 20 }} data-testid="settle-window-note">
+          {windowOpen ? (
+            <>
+              <span className="dot pending" aria-hidden="true" />
+              {" "}证据已通过核验。挑战窗口剩余{" "}
+              <span className="mono">{formatCountdown(windowRemaining)}</span>
+              ，窗口内仍可回到第 5 步发起挑战；窗口结束前合约拒绝放款。
+            </>
+          ) : (
+            <>
+              <span className="dot ok" aria-hidden="true" />
+              {" "}证据已通过核验，挑战窗口已结束。点击「确认结算」在链上完成付款。
+            </>
+          )}
         </div>
       )}
 

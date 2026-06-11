@@ -113,3 +113,14 @@ describe("Step2Plan — provider reputation 来源展示", () => {
     expect(html).not.toContain("chain-rep-tag");
   });
 });
+
+describe("Step2Plan — 结构化挑战计数", () => {
+  it("候选卡展示「被挑战 N 次 / 成立 M 次」结构化计数（0 挑战显示无记录）", () => {
+    const markup = renderToStaticMarkup(
+      <Step2Plan task={task({ plan: basePlan() })} onConfirm={noop} />
+    );
+    expect(markup).toContain("无挑战记录");
+    expect(markup).toContain("被挑战 5 次 / 成立 3 次");
+    expect(markup).toContain("被挑战 1 次 / 成立 0 次");
+  });
+});

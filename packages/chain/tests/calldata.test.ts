@@ -17,6 +17,8 @@ import {
   encodeUnlockStakeForJob,
   encodeOpenChallenge,
   encodeResolve,
+  encodeSubmitDefense,
+  encodeCastVote,
   ChallengeType,
   ChallengeResult
 } from "../src/calldata";
@@ -136,14 +138,24 @@ describe("calldata encoding", () => {
     expect(data.length).toBe(wordLen(3));
   });
 
-  it("encodes resolve(challengeId, result) — 2 words", () => {
-    const data = encodeResolve(1n, ChallengeResult.ProviderFault);
+  it("encodes resolve(challengeId) — 1 word (v2: outcome comes from on-chain votes)", () => {
+    const data = encodeResolve(1n);
+    expect(data.length).toBe(wordLen(1));
+  });
+
+  it("encodes submitDefense(challengeId, defenseHash) — 2 words", () => {
+    const data = encodeSubmitDefense(1n, hash32("d"));
     expect(data.length).toBe(wordLen(2));
+  });
+
+  it("encodes castVote(challengeId, result, reasonHash) — 3 words", () => {
+    const data = encodeCastVote(1n, ChallengeResult.ProviderFault, hash32("r"));
+    expect(data.length).toBe(wordLen(3));
   });
 
   it("openChallenge and resolve have distinct selectors from each other and from escrow fns", () => {
     const sOpen   = selector(encodeOpenChallenge(1n, 0, hash32("a")));
-    const sResolve = selector(encodeResolve(1n, 1));
+    const sResolve = selector(encodeResolve(1n));
     const sMark   = selector(encodeMarkChallenged(1n));
     expect(sOpen).not.toBe(sResolve);
     expect(sOpen).not.toBe(sMark);

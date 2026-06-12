@@ -1,8 +1,18 @@
 import React from "react";
 import type { JuryVote, Task, TaskChallenge } from "@proofmarket/shared/src/types";
 import type { TxRecord } from "@proofmarket/shared/src/realMode";
-import { presetCounterEvidence } from "@proofmarket/shared/src/fixtures";
+import {
+  presetChallengeDocument,
+  presetCounterEvidence
+} from "@proofmarket/shared/src/fixtures";
+import { LIBRARIES, type LibraryId } from "@proofmarket/shared/src/libraries";
+import {
+  buildPackageCommitment,
+  getMerkleProof,
+  verifyMerkleProof
+} from "@proofmarket/shared/src/merkle";
 import { isFullTxHash, sepoliaTxUrl, shortHash } from "../../lib/links";
+import { LOCAL_CORPUS } from "../../lib/localCorpus";
 import { formatCountdown, useCountdown } from "../../lib/useCountdown";
 import { StepShell } from "../StepShell";
 
@@ -11,31 +21,72 @@ import { StepShell } from "../StepShell";
 // 速查包漏检是真实的内容差异，不是写死的结果。
 const COMPLETENESS_SAMPLES = [
   {
-    title: "Block-STM: Scaling Blockchain Execution",
-    locator: "arXiv:2203.06871"
+    title:
+      "Block-STM: Scaling Blockchain Execution by Turning Ordering Curse to a Performance Blessing",
+    locator: "arXiv:2203.06871",
+    library: "arxiv" as LibraryId,
+    kind: "paper" as const
   },
   {
     title: "高吞吐智能合约执行中的状态热点",
-    locator: "mock-report:state-hotspots-2025"
+    locator: "delphi:state-hotspots-2025",
+    library: "delphi-digital" as LibraryId,
+    kind: "report" as const
   }
 ] as const;
 
+// 查全样本必须先做范围匹配：只有落在该专家覆盖声明范围内的样本才计入
+// 漏检。范围按声明的资料类型判断——声明含「研报」才把研报类样本计入，
+// 论文类样本要求声明含「论文」。范围外的样本展示为灰色、不计入挑战。
+function sampleInScope(
+  pkg: NonNullable<Task["providerPackage"]>,
+  sample: (typeof COMPLETENESS_SAMPLES)[number]
+): boolean {
+  return sample.kind === "report"
+    ? pkg.coverageStatement.includes("研报")
+    : pkg.coverageStatement.includes("论文");
+}
+
 function packageMissesSample(pkg: NonNullable<Task["providerPackage"]>): boolean {
   return COMPLETENESS_SAMPLES.some(
-    (sample) => !pkg.answers.some((a) => a.sourceLocator === sample.locator)
+    (sample) =>
+      sampleInScope(pkg, sample) &&
+      !pkg.answers.some((a) => a.sourceLocator === sample.locator)
   );
 }
 
-// 我方 Agent 的抽查核验：查准（抽样比对摘录与本地库原文）+ 查全（抽样
-// 「理应出现」的文献看是否在简报内）。这是挑战机制成立的根基——产出难、
-// 概率性验证容易，所以可以先信任交付，事后抽查兜底。
+// 我方 Agent 的抽查核验：查准（抽样比对摘录与本地库原文，并验证该叶子
+// 确在专家签名的承诺根下）+ 查全（抽样「理应出现」的文献看是否在简报
+// 内）。这是挑战机制成立的根基——产出难、概率性验证容易，所以可以先
+// 信任交付，事后抽查兜底。
 function AgentSpotCheck({ pkg }: { pkg: NonNullable<Task["providerPackage"]> }) {
-  const accuracySamples = pkg.answers.slice(0, 2);
+  // 查准抽样是两项真实计算的叠加，不是展示文案：
+  // ① 内容比对——摘录必须逐字出现在本地资料库（LOCAL_CORPUS）对应来源的
+  //    原文段落里，本地没有该来源或对不上即红；
+  // ② 承诺绑定——该条目的叶子哈希必须沿 Merkle 路径折算回专家签名上链的
+  //    承诺根，证明内容没有在传输层被调包。
+  const commitment = buildPackageCommitment(pkg);
+  const accuracySamples = pkg.answers.slice(0, 2).map((answer) => {
+    const leafIndex = pkg.answers.indexOf(answer) + 1; // 叶 0 为总述
+    const proof = getMerkleProof(commitment.leafHashes, leafIndex);
+    const corpusText = LOCAL_CORPUS[answer.sourceLocator];
+    return {
+      answer,
+      excerptOk:
+        corpusText != null && corpusText.includes(answer.excerptOrSummary),
+      proofOk: verifyMerkleProof(
+        commitment.leafHashes[leafIndex],
+        proof,
+        pkg.packageHash
+      )
+    };
+  });
   const completeness = COMPLETENESS_SAMPLES.map((sample) => ({
     ...sample,
+    inScope: sampleInScope(pkg, sample),
     present: pkg.answers.some((a) => a.sourceLocator === sample.locator)
   }));
-  const missed = completeness.filter((c) => !c.present);
+  const missed = completeness.filter((c) => c.inScope && !c.present);
 
   return (
     <div className="spot-check" style={{ marginTop: 20 }} data-testid="agent-spot-check">
@@ -46,10 +97,18 @@ function AgentSpotCheck({ pkg }: { pkg: NonNullable<Task["providerPackage"]> }) 
         <div className="data-row">
           <span className="data-label">查准 · 抽样比对</span>
           <div className="data-value">
-            {accuracySamples.map((a) => (
-              <div key={a.sourceLocator} className="dot-inline-wrap" style={{ marginBottom: 2 }}>
-                <span className="dot ok" aria-hidden="true" />
-                <span className="small">《{a.sourceTitle}》摘录与本地资料库原文一致</span>
+            {accuracySamples.map(({ answer, excerptOk, proofOk }) => (
+              <div key={answer.sourceLocator} className="dot-inline-wrap" style={{ marginBottom: 2 }}>
+                <span className={`dot ${excerptOk && proofOk ? "ok" : "danger"}`} aria-hidden="true" />
+                <span className="small">
+                  《{answer.sourceTitle}》
+                  {excerptOk
+                    ? "摘录与本地资料库存档段落逐字一致"
+                    : "摘录在本地资料库中比对失败"}
+                  {proofOk
+                    ? "；叶子哈希沿 Merkle 路径折算回承诺根，验证通过"
+                    : "；Merkle 路径验证失败"}
+                </span>
               </div>
             ))}
           </div>
@@ -59,9 +118,17 @@ function AgentSpotCheck({ pkg }: { pkg: NonNullable<Task["providerPackage"]> }) 
           <div className="data-value">
             {completeness.map((c) => (
               <div key={c.locator} className="dot-inline-wrap" style={{ marginBottom: 2 }}>
-                <span className={`dot ${c.present ? "ok" : "danger"}`} aria-hidden="true" />
-                <span className="small">
-                  《{c.title}》{c.present ? "已包含在简报中" : "未出现在简报中——但在其覆盖声明范围内"}
+                <span
+                  className={`dot ${c.present ? "ok" : c.inScope ? "danger" : "neutral"}`}
+                  aria-hidden="true"
+                />
+                <span className={`small${c.inScope ? "" : " muted"}`}>
+                  《{c.title}》
+                  {c.present
+                    ? "已包含在简报中"
+                    : c.inScope
+                      ? "未出现在简报中——且在其覆盖声明范围内"
+                      : `不在其覆盖声明范围（${LIBRARIES[c.library].kind}类来源未在声明中承诺），不计入`}
                 </span>
               </div>
             ))}
@@ -127,6 +194,15 @@ function ChallengeMaterials({
         </div>
       </div>
       <div className="data-row" style={{ marginTop: 6 }}>
+        <span className="data-label">反证所在库</span>
+        <div className="data-value">
+          {LIBRARIES[presetCounterEvidence.sourceLibrary as LibraryId].name}
+          <span className="muted small">
+            {" "}· {LIBRARIES[presetCounterEvidence.sourceLibrary as LibraryId].access}——审判方自行调取原文核对，不依赖挑战者提交件
+          </span>
+        </div>
+      </div>
+      <div className="data-row" style={{ marginTop: 6 }}>
         <span className="data-label">反证主张（明文）</span>
         <div className="data-value">{presetCounterEvidence.claim}</div>
       </div>
@@ -134,8 +210,20 @@ function ChallengeMaterials({
         <span className="data-label">反证哈希</span>
         <div className="data-value mono">{challenge.counterEvidenceHash}</div>
       </div>
+      <div className="data-row" style={{ marginTop: 6 }}>
+        <span className="data-label">被挑战简报承诺根</span>
+        <div className="data-value mono">
+          {task.providerPackage ? shortHash(task.providerPackage.packageHash) : "—"}
+          <span className="muted small">（专家签名上链的 Merkle 根）</span>
+        </div>
+      </div>
+      <div className="data-row" style={{ marginTop: 6 }}>
+        <span className="data-label">审判方指派依据</span>
+        <div className="data-value">{presetChallengeDocument.juryAssignmentBasis}</div>
+      </div>
       <p className="small muted tight" style={{ marginTop: 6 }}>
-        上方为提交给审判团的明文；协议只把它的哈希写入链上，任何人可按哈希核对明文未被篡改。审判团不轻信提交件，会自行访问定位符核对原文。
+        上方为提交给审判团的明文；协议只把它的哈希写入链上，任何人可按哈希核对明文未被篡改。审判团不轻信提交件，各审判方凭自有库授权按定位符调取原文核对。「缺失」无法用哈希路径证明，由审判团裁量——但若专家实际包含了该文献，应辩时只需出示对应叶子与到承诺根的
+        Merkle 路径，即可一证推翻挑战。
       </p>
     </div>
   );
@@ -177,6 +265,12 @@ function DefenseCard({ challenge }: { challenge: TaskChallenge }) {
           <p className="small muted tight" style={{ marginTop: 6 }}>
             挑战是公开的链上事件：专家端的监听服务收到事件后在窗口内自动提交应辩，窗口按链上时间强制。审判团必须等应辩窗口结束才能投票（强制兼听）；放弃应辩视同弃权，裁决照常进行。
           </p>
+          {challenge.type === "CoverageMiss" ? (
+            <p className="small muted tight" style={{ marginTop: 4 }}>
+              本应辩仅作范围抗辩，未出示叶子证明——若简报确实包含该文献，专家只需给出对应叶子与到承诺根的
+              Merkle 路径，即可直接推翻挑战、无需审判团裁量。
+            </p>
+          ) : null}
         </>
       ) : (
         <div className="info-strip">专家未在应辩窗口内提交应辩书（视同放弃应辩）。</div>
@@ -205,6 +299,10 @@ function JuryVoteCard({ vote, index }: { vote: JuryVote; index: number }) {
         </span>
       </summary>
       <div className="evidence-item-body">
+        <div className="data-row">
+          <span className="data-label">原文核对</span>
+          <div className="data-value">{vote.reasonBook.sourceCheck}</div>
+        </div>
         <div className="data-row">
           <span className="data-label">范围内？</span>
           <div className="data-value">{vote.reasonBook.inScope}</div>
@@ -317,6 +415,7 @@ function EvidenceItem({
     providerAnswer: string;
     sourceTitle: string;
     sourceLocator: string;
+    sourceLibrary: string;
     sourceMetadata: { year: number; type: string };
     excerptOrSummary: string;
     relevanceExplanation: string;
@@ -337,6 +436,15 @@ function EvidenceItem({
         <div className="data-row">
           <span className="data-label">来源定位</span>
           <div className="data-value mono">{answer.sourceLocator}</div>
+        </div>
+        <div className="data-row">
+          <span className="data-label">来源库</span>
+          <div className="data-value">
+            {LIBRARIES[answer.sourceLibrary as LibraryId]?.name ?? answer.sourceLibrary}
+            <span className="muted small">
+              {" "}· {LIBRARIES[answer.sourceLibrary as LibraryId]?.kind ?? ""}
+            </span>
+          </div>
         </div>
         <div className="data-row">
           <span className="data-label">年份 / 类型</span>
@@ -592,7 +700,7 @@ function ChallengeStage3({
         <div className="challenge-fund-actions">
           <div className="challenge-fund-row">
             <span className="challenge-fund-icon" aria-hidden="true">—</span>
-            <span>扣除专家质押 50%（5 mUSDC，一半奖励挑战者）</span>
+            <span>扣罚专家本单履约 bond（10 mUSDC）的 50% = 5 mUSDC，其中一半奖励挑战者</span>
           </div>
           <div className="challenge-fund-row">
             <span className="challenge-fund-icon" aria-hidden="true">—</span>
@@ -760,7 +868,7 @@ export function Step5Evidence({
             链上一致性
           </p>
           <div className="data-row">
-            <span className="data-label">简报哈希</span>
+            <span className="data-label">简报承诺根</span>
             <div className="data-value">
               {submitTxLink ? (
                 <a
@@ -777,8 +885,50 @@ export function Step5Evidence({
               )}
             </div>
           </div>
+          {(() => {
+            // Real recomputation, not copy: rebuild the tree from the received
+            // plaintext and compare to the root the provider signed on-chain.
+            const { root, leafHashes } = buildPackageCommitment(providerPackage);
+            const rootMatches = root === providerPackage.packageHash;
+            return (
+              <>
+                <div className="data-row" style={{ marginTop: 6 }}>
+                  <span className="data-label">承诺结构</span>
+                  <div className="data-value">
+                    <div className="small">
+                      <span className="mono">叶 0</span> 总述与覆盖声明{" "}
+                      <span className="mono muted">{shortHash(leafHashes[0])}</span>
+                    </div>
+                    {providerPackage.answers.map((answer, i) => (
+                      <div className="small" key={answer.sourceLocator}>
+                        <span className="mono">叶 {i + 1}</span> 《{answer.sourceTitle}》{" "}
+                        <span className="mono muted">{shortHash(leafHashes[i + 1])}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="data-row" style={{ marginTop: 6 }}>
+                  <span className="data-label">明文重算</span>
+                  <div className="data-value">
+                    <span className="dot-inline-wrap">
+                      <span
+                        className={`dot ${rootMatches ? "ok" : "danger"}`}
+                        aria-hidden="true"
+                      />
+                      <span className="small">
+                        {rootMatches
+                          ? "按收到的明文重算 Merkle 根，与专家签名提交的承诺根一致"
+                          : "明文重算根与链上承诺不一致——交付内容与签名承诺不符"}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
           <p className="small muted tight" style={{ marginTop: 6 }}>
-            简报全文（含摘录）的哈希由专家地址签名的 submit 交易写入链上：明文重算即可比对，改一个字都对不上。专家无法否认交付内容，任何人也无法伪造一份「专家给的」简报——伪造文本凑不出专家签过名的哈希。
+            简报按「总述 + 逐条资料-建议」组织成 Merkle 树，根由专家地址签名的 submit
+            交易写入链上：明文重算即可比对，改一个字都对不上。专家无法否认交付内容，任何人也无法伪造一份「专家给的」简报——伪造文本凑不出专家签过名的根。挑战或应辩只需出示相关叶子与哈希路径，无需公开简报全文。
           </p>
         </div>
       )}
@@ -812,6 +962,9 @@ export function Step5Evidence({
               <div className="data-value">有效</div>
             </div>
           )}
+        <p className="small muted tight" style={{ marginTop: 6 }}>
+          Judge 核验是协议外的辅助判断；对交付质量的硬保证来自挑战机制与经济惩罚，不依赖这一步。
+        </p>
       </div>
 
       {/* ── 确定性挑战流程 ──────────────────────────────── */}

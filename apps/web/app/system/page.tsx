@@ -9,7 +9,8 @@ import {
   reputationSummaryToScore1000
 } from "@proofmarket/chain/src/erc8004";
 import { parseDeploymentArtifact } from "@proofmarket/shared/src/realMode";
-import { providerProfiles } from "@proofmarket/shared/src/fixtures";
+import { presetJurors, providerProfiles } from "@proofmarket/shared/src/fixtures";
+import { LIBRARIES, libraryNames } from "@proofmarket/shared/src/libraries";
 import { sepoliaAddressUrl, shortAddress } from "../../lib/links";
 
 // Live chain reads on every request: this page is the on-screen proof of the
@@ -219,12 +220,23 @@ export default async function SystemPage() {
                     {juror.promptHash ? `${juror.promptHash.slice(0, 26)}…` : "—"}
                   </div>
                 </div>
+                <div className="data-row">
+                  <span className="data-label">资料库授权</span>
+                  <div className="data-value">
+                    {libraryNames(
+                      presetJurors[jurors.indexOf(juror)]?.libraryAccess ?? []
+                    ) || "—"}
+                    <span className="muted small">
+                      {" "}· 运营方自报，用于原文核对与挑战指派匹配
+                    </span>
+                  </div>
+                </div>
               </div>
             </details>
           ))}
         </div>
         <p className="small muted tight" style={{ marginTop: 8 }}>
-          每个审判方注册时将其模型版本与审判 prompt 的哈希承诺上链；裁决有争议时按承诺参数披露并离线重跑，任何一票都可复核。
+          每个审判方注册时将其模型版本与审判 prompt 的哈希承诺上链；裁决有争议时按承诺参数披露并离线重跑，任何一票都可复核。挑战发起时按「审判方库授权 ⊇ 反证所在库」指派席位，确保每一票都能自行调取原文，而不是轻信挑战者提交件。
         </p>
       </section>
 
@@ -246,6 +258,13 @@ export default async function SystemPage() {
                   </span>
                   <span className="muted small">
                     {" "}· 信誉 {rep?.score}/1000{rep?.source === "erc8004" ? "（链上）" : ""} · 被挑战 {profile.challengeStats.challenged} 次 / 成立 {profile.challengeStats.upheld} 次
+                  </span>
+                  <span className="lib-tag-row">
+                    {profile.libraries.map((lib) => (
+                      <span className="lib-tag" key={lib}>
+                        {LIBRARIES[lib].name}
+                      </span>
+                    ))}
                   </span>
                 </div>
               </div>

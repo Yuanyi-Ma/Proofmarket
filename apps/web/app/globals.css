@@ -578,6 +578,11 @@ button.stepper-link:hover {
   background: var(--danger);
 }
 
+/* 不计入判定的中性项（如范围外的查全样本） */
+.dot.neutral {
+  background: var(--text-3);
+}
+
 /* Neutral, collapsed-by-default record of the (intentional) Cobo denial —
    it should read as "the guard worked", not as a live error bleeding through
    the rest of the happy path. */
@@ -898,6 +903,26 @@ button.stepper-link:hover {
   border-color: rgba(247, 144, 9, 0.45);
   background: var(--pending-bg);
   color: var(--pending);
+}
+
+/* 资料库授权标签：中性灰 chip，一行可多枚 */
+.lib-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.lib-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  white-space: nowrap;
+  background: var(--bg-2, #f7f8fa);
 }
 
 /* 链上信誉来源标注 — 仅文字标签，不抢焦点 */

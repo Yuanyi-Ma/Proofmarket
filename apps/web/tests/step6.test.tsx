@@ -29,6 +29,7 @@ const pkg: ProviderAnswerPackage = {
       providerAnswer: "乐观并行执行是当前执行加速的核心方向。",
       sourceTitle: "Block-STM",
       sourceLocator: "arXiv:2203.06871",
+      sourceLibrary: "arxiv",
       sourceMetadata: { year: 2022, type: "paper" },
       excerptOrSummary: "Block-STM 通过乐观并发控制实现并行执行。",
       relevanceExplanation: "直接相关，但不能证明普遍适用所有工作负载。"
@@ -37,6 +38,7 @@ const pkg: ProviderAnswerPackage = {
       providerAnswer: "投机执行可降低延迟。",
       sourceTitle: "Speculative Execution Survey",
       sourceLocator: "arXiv:2301.09999",
+      sourceLibrary: "arxiv",
       sourceMetadata: { year: 2023, type: "paper" },
       excerptOrSummary: "综述投机执行在区块链的应用。",
       relevanceExplanation: "与主题相关，覆盖范围限于 EVM 兼容链。"

@@ -1,15 +1,26 @@
 import React from "react";
 import { providerProfiles } from "@proofmarket/shared/src/fixtures";
+import { LIBRARIES, type LibraryId } from "@proofmarket/shared/src/libraries";
 import { sepoliaAddressUrl, shortAddress } from "../lib/links";
 
 // ── Landing-only expert catalog ───────────────────────────────────────────────
 // The three protocol experts come from the shared catalog (real ERC-8004
 // identities). The rest are display-only marketplace entries: they never enter
 // the commissioning flow, so their addresses are presentation-layer placeholders.
-const displayProviders = [
+const displayProviders: Array<{
+  name: string;
+  specialty: string;
+  libraries: LibraryId[];
+  price: string;
+  score: number;
+  challenged: number;
+  upheld: number;
+  address: string;
+}> = [
   ...providerProfiles.map((p) => ({
     name: p.name,
     specialty: p.coverage,
+    libraries: p.libraries,
     price: p.price,
     score: p.reputationScore,
     challenged: p.challengeStats.challenged,
@@ -18,7 +29,9 @@ const displayProviders = [
   })),
   {
     name: "行业研究专家 Agent",
-    specialty: "持有授权行业研报库（市场规模、竞品格局、专家访谈纪要），简报附报告名与页码定位",
+    specialty:
+      "订阅 Gartner、IDC 与 Statista 行业数据库，沉淀 Messari Pro 加密行业研报；简报附报告名与页码定位",
+    libraries: ["gartner", "idc", "statista", "cb-insights", "messari-pro"],
     price: "1.2 mUSDC",
     score: 941,
     challenged: 2,
@@ -27,7 +40,9 @@ const displayProviders = [
   },
   {
     name: "法规合规专家 Agent",
-    specialty: "覆盖证券、数据与金融监管方向的法规、判例与监管指引，逐条附条文编号与生效日期",
+    specialty:
+      "持有北大法宝与 LexisNexis 授权，覆盖证券、数据与金融监管方向的法规、判例与监管指引，逐条附条文编号与生效日期",
+    libraries: ["pkulaw", "wolters-kluwer", "lexisnexis", "eur-lex", "npc-flk"],
     price: "0.9 mUSDC",
     score: 907,
     challenged: 1,
@@ -119,7 +134,7 @@ export default function LandingPage() {
               </div>
               <div className="data-row">
                 <span className="data-label">违约扣罚</span>
-                <div className="data-value mono">质押 50%，一半奖励挑战者</div>
+                <div className="data-value mono">每单 bond 的 50%，一半奖励挑战者</div>
               </div>
               <div className="data-row">
                 <span className="data-label">挑战 / 应辩窗口</span>
@@ -167,7 +182,16 @@ export default function LandingPage() {
               {displayProviders.map((p) => (
                 <tr key={p.address}>
                   <td className="lp-td-name">{p.name}</td>
-                  <td className="lp-td-specialty">{p.specialty}</td>
+                  <td className="lp-td-specialty">
+                    {p.specialty}
+                    <span className="lib-tag-row">
+                      {p.libraries.map((lib) => (
+                        <span className="lib-tag" key={lib}>
+                          {LIBRARIES[lib].name}
+                        </span>
+                      ))}
+                    </span>
+                  </td>
                   <td className="lp-num mono">{p.price}</td>
                   <td className="lp-num mono">{p.score} / 1000</td>
                   <td className="lp-num mono">

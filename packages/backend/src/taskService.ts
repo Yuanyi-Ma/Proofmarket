@@ -418,7 +418,8 @@ export function createTaskService(store: InMemoryStore): TaskService {
           result: "success",
           message:
             `用户发起挑战：类型 CoverageMiss，反证哈希 ${counterEvidenceHash}。` +
-            "挑战押金与审判费已锁定，托管订单已冻结，专家应辩窗口开启。",
+            "挑战押金与审判费已锁定，托管订单已冻结，专家应辩窗口开启。" +
+            `审判方指派：${presetChallengeDocument.juryAssignmentBasis}`,
           jobId: task.jobId
         })
       );

@@ -22,6 +22,7 @@ const pkg: ProviderAnswerPackage = {
       providerAnswer: "乐观并行执行是当前执行加速的核心方向。",
       sourceTitle: "Block-STM",
       sourceLocator: "arXiv:2203.06871",
+      sourceLibrary: "arxiv",
       sourceMetadata: { year: 2022, type: "paper" },
       excerptOrSummary: "Block-STM 通过乐观并发控制实现并行执行，减少冲突重执行。",
       relevanceExplanation: "直接支持执行加速主题，但不能证明普遍适用所有工作负载。"
@@ -30,6 +31,7 @@ const pkg: ProviderAnswerPackage = {
       providerAnswer: "投机执行可进一步降低延迟。",
       sourceTitle: "Speculative Execution Survey",
       sourceLocator: "arXiv:2301.09999",
+      sourceLibrary: "arxiv",
       sourceMetadata: { year: 2023, type: "paper" },
       excerptOrSummary: "综述了投机执行在区块链场景的应用与局限。",
       relevanceExplanation: "与主题相关，但覆盖范围仅限于 EVM 兼容链。"
@@ -343,7 +345,7 @@ describe("Step5Evidence — RefundedOrSlashed stage", () => {
 
   it("shows the fund action lines including the jury fee", () => {
     render(<Step5Evidence task={resolvedTask} {...defaultProps} />);
-    expect(screen.getByText(/扣除专家质押 50%/)).toBeTruthy();
+    expect(screen.getByText(/扣罚专家本单履约 bond（10 mUSDC）的 50%/)).toBeTruthy();
     expect(screen.getByText(/托管资金退款买方/)).toBeTruthy();
     expect(screen.getByText(/挑战者押金 \+ 审判费全额退回/)).toBeTruthy();
     expect(screen.getByText(/三位审判方均分/)).toBeTruthy();
@@ -461,5 +463,135 @@ describe("Step5Evidence — legacy status badges (status labels)", () => {
       />
     );
     expect(screen.getAllByText(/裁决已执行/).length).toBeGreaterThan(0);
+  });
+});
+
+// ── 我方 Agent 抽查核验 + Merkle 承诺 ────────────────────────────────────────
+import { buildPackageCommitment } from "@proofmarket/shared/src/merkle";
+
+/** 同一内容、真实承诺根：抽查面板的 Merkle 路径验证是真实计算。 */
+function withRealRoot(p: ProviderAnswerPackage): ProviderAnswerPackage {
+  const { packageHash: _ignored, ...preimage } = p;
+  return { ...p, packageHash: buildPackageCommitment(preimage).root };
+}
+
+const expertPkg: ProviderAnswerPackage = withRealRoot({
+  ...pkg,
+  coverageStatement:
+    "本简报基于论文库与行业研报库，覆盖 2021-2026 年区块链交易执行加速方向。",
+  answers: [
+    {
+      ...pkg.answers[0],
+      // 与 lib/localCorpus.ts 的存档段落逐字一致——查准内容比对是真实子串匹配
+      excerptOrSummary:
+        "Block-STM 利用乐观并行执行与冲突检测，在保持确定性结果的前提下并发执行有序的区块链交易。"
+    },
+    {
+      providerAnswer: "状态热点约束并行收益。",
+      sourceTitle: "高吞吐智能合约执行中的状态热点",
+      sourceLocator: "delphi:state-hotspots-2025",
+      sourceLibrary: "delphi-digital",
+      sourceMetadata: { year: 2025, type: "report" },
+      excerptOrSummary: "状态热点与存储 I/O 仍可能主导执行延迟。",
+      relevanceExplanation: "约束过度宣称。"
+    }
+  ]
+});
+
+const shallowPkg: ProviderAnswerPackage = withRealRoot({
+  ...pkg,
+  providerId: "shallow-search-provider",
+  providerName: "文献速查 Agent",
+  coverageStatement:
+    "自报广泛覆盖 2021-2026 年区块链执行加速方向的学术论文（接入 IEEE Xplore / Elsevier ScienceDirect / arXiv）。",
+  answers: [
+    {
+      providerAnswer: "性能提升主要来自共识与硬件。",
+      sourceTitle: "通用区块链性能综述",
+      sourceLocator: "web:generic-performance-overview",
+      sourceLibrary: "open-web",
+      sourceMetadata: { year: 2024, type: "report" },
+      excerptOrSummary: "通用公开网页摘要。",
+      relevanceExplanation: "相关但遗漏执行层专项工作。"
+    }
+  ]
+});
+
+describe("Step5Evidence — Agent spot check (scope-matched, real Merkle proofs)", () => {
+  it("expert package: both samples in scope and present, no failure strip", () => {
+    render(<Step5Evidence task={task({ providerPackage: expertPkg })} {...defaultProps} />);
+    expect(screen.getByTestId("agent-spot-check")).toBeTruthy();
+    expect(screen.queryByTestId("spot-check-failed")).toBeNull();
+    expect(screen.getAllByText(/已包含在简报中/).length).toBe(2);
+  });
+
+  it("expert package: 查准 rows do both real checks — corpus match and Merkle proof", () => {
+    render(<Step5Evidence task={task({ providerPackage: expertPkg })} {...defaultProps} />);
+    expect(screen.getAllByText(/Merkle 路径折算回承诺根，验证通过/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/摘录与本地资料库存档段落逐字一致/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Merkle 路径验证失败/)).toBeNull();
+  });
+
+  it("a tampered excerpt fails the corpus comparison (red, not copy)", () => {
+    const tampered = withRealRoot({
+      ...expertPkg,
+      answers: [
+        { ...expertPkg.answers[0], excerptOrSummary: "Block-STM 可让所有工作负载获得线性加速。" },
+        expertPkg.answers[1]
+      ]
+    });
+    render(<Step5Evidence task={task({ providerPackage: tampered })} {...defaultProps} />);
+    expect(screen.getAllByText(/摘录在本地资料库中比对失败/).length).toBe(1);
+  });
+
+  it("shallow package: in-scope paper miss is red, out-of-scope report sample is excluded", () => {
+    render(<Step5Evidence task={task({ providerPackage: shallowPkg })} {...defaultProps} />);
+    expect(screen.getByTestId("spot-check-failed")).toBeTruthy();
+    expect(screen.getAllByText(/未出现在简报中——且在其覆盖声明范围内/).length).toBe(1);
+    expect(screen.getAllByText(/不在其覆盖声明范围/).length).toBe(1);
+  });
+
+  it("shallow package: secondary action becomes 生成挑战包，发起挑战", () => {
+    render(<Step5Evidence task={task({ providerPackage: shallowPkg })} {...defaultProps} />);
+    expect(screen.getByRole("button", { name: "生成挑战包，发起挑战" })).toBeTruthy();
+  });
+
+  it("expert package keeps the plain 发起挑战 action", () => {
+    render(<Step5Evidence task={task({ providerPackage: expertPkg })} {...defaultProps} />);
+    expect(screen.getByRole("button", { name: "发起挑战" })).toBeTruthy();
+  });
+
+  it("链上一致性 lists the commitment structure: overview leaf + one leaf per answer", () => {
+    render(<Step5Evidence task={task({ providerPackage: expertPkg })} {...defaultProps} />);
+    expect(screen.getAllByText(/总述与覆盖声明/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/叶 2/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("Step5Evidence — challenge materials rigor rows", () => {
+  it("挑战书 shows the counter-evidence library and jury assignment basis", () => {
+    render(
+      <Step5Evidence
+        task={task({ status: "Challenged", challenge: challengeFixture })}
+        {...defaultProps}
+      />
+    );
+    expect(screen.getAllByText(/反证所在库/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/审判方指派依据/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/开放获取/).length).toBeGreaterThan(0);
+  });
+
+  it("every jury vote card carries an 原文核对 row", () => {
+    render(
+      <Step5Evidence
+        task={task({
+          status: "ChallengeWon",
+          challenge: { ...challengeFixture, votes: votesFixture }
+        })}
+        {...defaultProps}
+      />
+    );
+    expect(screen.getAllByText("原文核对").length).toBe(votesFixture.length);
+    expect(screen.getAllByText(/已凭自有 arXiv 访问权限调取/).length).toBeGreaterThan(0);
   });
 });

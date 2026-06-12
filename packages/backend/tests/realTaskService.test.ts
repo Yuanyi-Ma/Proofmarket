@@ -134,6 +134,7 @@ function makeDeps(
             providerAnswer: "a",
             sourceTitle: "s",
             sourceLocator: "arXiv:1",
+            sourceLibrary: "arxiv",
             sourceMetadata: { year: 2022, type: "paper" },
             excerptOrSummary: "e",
             relevanceExplanation: "r"

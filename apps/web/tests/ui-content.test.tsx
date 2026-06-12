@@ -31,6 +31,7 @@ const providerPackage: ProviderAnswerPackage = {
       providerAnswer: "Parallel execution and conflict detection matter.",
       sourceTitle: "Block-STM",
       sourceLocator: "arXiv:2203.06871",
+      sourceLibrary: "arxiv",
       sourceMetadata: { year: 2022, type: "paper" },
       excerptOrSummary: "Block-STM executes ordered transactions concurrently.",
       relevanceExplanation: "Directly supports execution acceleration."

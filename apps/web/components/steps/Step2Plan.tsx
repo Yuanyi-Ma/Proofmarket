@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { providerProfiles } from "@proofmarket/shared/src/fixtures";
+import { LIBRARIES } from "@proofmarket/shared/src/libraries";
 import type { PlanCandidate, ProviderId, Task } from "@proofmarket/shared/src/types";
 import { DataRow } from "../Section";
 import { StatusBadge } from "../StatusBadge";
@@ -155,6 +156,14 @@ export function Step2Plan({
                     </div>
 
                     <p className="small muted tight candidate-coverage">{profile.coverage}</p>
+
+                    <div className="lib-tag-row" aria-label="资料库授权">
+                      {profile.libraries.map((lib) => (
+                        <span className="lib-tag" key={lib}>
+                          {LIBRARIES[lib].name}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </label>
               );

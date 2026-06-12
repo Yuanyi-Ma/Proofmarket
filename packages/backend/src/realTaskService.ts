@@ -1231,7 +1231,8 @@ export function createRealTaskService(store: InMemoryStore, deps: RealDeps): Tas
               message:
                 `用户发起挑战：类型 CoverageMiss，反证哈希 ${counterEvidenceHash}。` +
                 `挑战者为 Cobo 钱包（订单 client），将锁定挑战押金 ${Number(depositRaw) / 1e6} mUSDC + ` +
-                `审判费 ${Number(juryFeeRaw) / 1e6} mUSDC 并冻结托管订单。`,
+                `审判费 ${Number(juryFeeRaw) / 1e6} mUSDC 并冻结托管订单。` +
+                `审判方指派：${presetChallengeDocument.juryAssignmentBasis}`,
               jobId: task.jobId
             })
           )

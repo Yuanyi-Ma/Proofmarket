@@ -35,6 +35,8 @@ export type EvidenceItem = {
   providerAnswer: string;
   sourceTitle: string;
   sourceLocator: string;
+  /** Which authoritative library this source came from (registry in libraries.ts). */
+  sourceLibrary: import("./libraries").LibraryId;
   sourceMetadata: {
     year: number;
     type: "paper" | "report" | "chain-data";
@@ -50,6 +52,12 @@ export type ProviderAnswerPackage = {
   providerName: string;
   coverageStatement: string;
   answers: EvidenceItem[];
+  /**
+   * Merkle ROOT over the briefing leaves (leaf 0 = overview/coverage, leaf
+   * 1..n = one evidence item each; see merkle.ts). This is what the provider
+   * signs on-chain at submit — any single leaf can later be proven part of
+   * the briefing with just (leaf plaintext, Merkle path).
+   */
   packageHash: string;
 };
 
@@ -61,6 +69,8 @@ export type ProviderProfile = {
   name: string;
   role: "recommended" | "risky" | "comparison";
   coverage: string;
+  /** Libraries this expert self-declares licensed/able access to. */
+  libraries: import("./libraries").LibraryId[];
   price: string;
   stake: string;
   reputationScore: number;
@@ -156,6 +166,8 @@ export type JuryVote = {
   vote: "ProviderFault" | "ProviderNotFault";
   reasonCode: string;
   reasonBook: {
+    /** 审判方凭自有库授权调取反证原文核对的结果。 */
+    sourceCheck: string;
     /** 反例在承诺范围内吗？ */
     inScope: string;
     /** 字面或语义命中声明检索词吗？ */

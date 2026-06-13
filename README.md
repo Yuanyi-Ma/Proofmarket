@@ -15,7 +15,7 @@
 
 - **项目介绍网页**：https://yuanyi-ma.github.io/proofmarket/
 - **Pitch**：[`ProofMarket-pitch.pptx`](./ProofMarket-pitch.pptx)
-- **演示视频**（Sepolia 真链实跑）：[`ProofMarket-demo.mp4`](./ProofMarket-demo.mp4)
+- **演示视频**（Sepolia 真链实跑）：[在线播放](https://yuanyi-ma.github.io/proofmarket/#demo) · [文件下载](./ProofMarket-demo.mp4)
 
 ## 仓库结构
 
